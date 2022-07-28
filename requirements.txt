@@ -44,14 +44,14 @@ termcolor==1.1.0
 threadpoolctl==3.1.0
 tifffile==2022.5.4
 tomli==2.0.1
-torch==1.11.0
-torch-cluster==1.6.0
+# torch==1.11.0
+# torch-cluster==1.6.0 # fail
 torch-geometric==2.0.4
-torch-scatter==2.0.9
-torch-sparse==0.6.13
-torch-spline-conv==1.2.1
-torchaudio==0.11.0
-torchvision==0.12.0
+# torch-scatter==2.0.9 # fail
+# torch-sparse==0.6.13 # fail
+# torch-spline-conv==1.2.1 # fail
+# torchaudio==0.11.0
+# torchvision==0.12.0
 tqdm==4.64.0
 transforms3d==0.3.1
 trimesh==3.12.3

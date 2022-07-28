@@ -26,6 +26,7 @@ class Writer:
     def print_info(self, info):
         message = 'Epoch: {}/{}, Duration: {:.3f}s, Train Loss: {:.4f}, Test Loss: {:.4f}' \
                 .format(info['current_epoch'], info['epochs'], info['t_duration'], info['train_loss'], info['test_loss'])
+        print(message)
         logging.info(message)
 
     def print_step(self, info):
@@ -37,6 +38,7 @@ class Writer:
         message = 'Epoch: {}/{}, Step: {}/{}, Total: {}, Dur: {:.3f}s, FDur: {:.3f}s, BDur: {:.3f}s,, Train Loss: {:.4f}, L1 Loss: {:.4f}, Lr: {:.6f}' \
             .format(info['epoch'], info['max_epoch'], info['step'], info['max_step'], info['total_step'],
             info['step_duration'], info['forward_duration'] ,info['backward_duration'], info['train_loss'], info['l1_loss'], info['lr'])
+        print('  > ' + message)
         logging.info(message)
 
     def save_checkpoint(self, model, optimizer, scheduler, epoch, best=False, last=False):

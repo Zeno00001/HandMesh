@@ -11,7 +11,7 @@ from mobrecon.build import DATA_REGISTRY
 
 
 @DATA_REGISTRY.register()
-class MultipleDatasets(Dataset):
+class MultipleDatasets(Dataset):  # combine 2 datasets
     def __init__(self, cfg, phase='train', writer=None):
         self.cfg = cfg
         self.dbs = []
@@ -22,6 +22,7 @@ class MultipleDatasets(Dataset):
         self.db_num = len(self.dbs)
         self.max_db_data_num = max([len(db) for db in self.dbs])
         self.db_len_cumsum = np.cumsum([len(db) for db in self.dbs])
+        # cumulative sum: [2, 3, 6, 5] -> [2, 5, 11, 16]
         self.make_same_len = False
         if writer is not None:
             writer.print_str('Merge train set, total {} samples'.format(self.__len__()))
@@ -45,13 +46,14 @@ class MultipleDatasets(Dataset):
                 data_idx = data_idx % len(self.dbs[db_idx])
         else:
             for i in range(self.db_num):
-                if index < self.db_len_cumsum[i]:
+                if index < self.db_len_cumsum[i]:  # ind(10), [4, 8, 15] in 3rd dataset
                     db_idx = i
                     break
             if db_idx == 0:
                 data_idx = index
             else:
-                data_idx = index - self.db_len_cumsum[db_idx-1]
+                data_idx = index - self.db_len_cumsum[db_idx-1]  # ind(10), (-8) -> self.dbs[1][2]
+        # print(f'get dbs[{db_idx}][{data_idx}]')
         return self.dbs[db_idx][data_idx]
 
 if __name__ == '__main__':

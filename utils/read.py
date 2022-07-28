@@ -9,12 +9,18 @@ import pickle
 
 
 def read_mesh(path):
-    mesh = om.read_trimesh(path)
-    face = torch.from_numpy(mesh.face_vertex_indices()).T.type(torch.long)
-    x = torch.tensor(mesh.points().astype('float32'))
-    edge_index = torch.cat([face[:2], face[1:], face[::2]], dim=1)
-    edge_index = to_undirected(edge_index)
-    return Data(x=x, edge_index=edge_index, face=face)
+    try:
+        mesh = om.read_trimesh(path)
+        face = torch.from_numpy(mesh.face_vertex_indices()).T.type(torch.long)
+        # return empty torch in freihand[19502]
+        # input(mesh.face_vertex_indices())
+        x = torch.tensor(mesh.points().astype('float32'))
+        edge_index = torch.cat([face[:2], face[1:], face[::2]], dim=1)
+        edge_index = to_undirected(edge_index)
+        return Data(x=x, edge_index=edge_index, face=face)
+    except:
+        print(f'\n{path} mesh file broken\n')
+        raise RuntimeError
 
 
 def save_mesh(fp, x, f):

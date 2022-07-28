@@ -49,8 +49,13 @@ def main(args):
     if args.rank == 0:
         print(cfg)
         print(args.exp_name)
+    # from mobrecon.models.mobrecon_ds import MobRecon_DS
+    # there is a python decorator inside
+    # register MobRecon_DS automatically
     exec('from mobrecon.models.{} import {}'.format(cfg.MODEL.NAME.lower(), cfg.MODEL.NAME))
+    # from mobrecon.datasets.multipledatasets import MultipleDatasets
     exec('from mobrecon.datasets.{} import {}'.format(cfg.TRAIN.DATASET.lower(), cfg.TRAIN.DATASET))
+    # from mobrecon.datasets.ge import Ge
     exec('from mobrecon.datasets.{} import {}'.format(cfg.VAL.DATASET.lower(), cfg.VAL.DATASET))
 
     # dir
@@ -97,7 +102,7 @@ def main(args):
         writer.print_str('Train from 0 epoch')
 
     # data
-    kwargs = {"pin_memory": True, "num_workers": 8, "drop_last": True}
+    kwargs = {"pin_memory": True, "num_workers": 4, "drop_last": True}  # num_worker: 8
     if cfg.PHASE in ['train',]:
         train_dataset = build_dataset(cfg, 'train', writer=writer)
         train_sampler = None
@@ -120,6 +125,20 @@ def main(args):
     else:
         print('Need not testloader')
         test_loader = None
+
+    # check dataset here
+    # img00028376 = train_dataset[28376] # mask file broken
+    # img19502 = train_dataset[19502]
+    # mesh154 = train_dataset[154]
+    # mesh25265 = train_dataset[25265]
+    # for i in range(len(train_dataset)):
+    #     print(f'image: {i}')
+    #     img_data = train_dataset[i]
+
+    # for step, data in enumerate(train_loader):
+    #     print(f'steps: {step: <5}/{len(train_loader)}')
+
+    # input('Success!!!') # perfect
 
     # run
     runner = Runner(cfg, args, model, train_loader, eval_loader, test_loader, optimizer, writer, device, board, start_epoch=epoch)

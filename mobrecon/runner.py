@@ -65,6 +65,7 @@ class Runner(object):
                     'test_loss': val_loss,
                     't_duration': t_duration
                 }
+                print(f'epoch: {self.epoch: 3} / {self.max_epochs}')
 
                 self.writer.print_info(info)
                 if val_loss < self.best_val_loss:
@@ -80,6 +81,9 @@ class Runner(object):
             raise Exception('PHASE ERROR')
 
     def phrase_data(self, data):
+        '''
+        將 data[each key] 中的每一筆 data 都傳到 .to('GPU') 裡面
+        '''
         for key, val in data.items():
             try:
                 if isinstance(val, list):
@@ -153,7 +157,7 @@ class Runner(object):
         for step, data in enumerate(self.train_loader):
             ts = time.time()
             adjust_learning_rate(self.optimizer, self.epoch, step, len(self.train_loader), self.cfg.TRAIN.LR, self.cfg.TRAIN.LR_DECAY, self.cfg.TRAIN.DECAY_STEP, self.cfg.TRAIN.WARMUP_EPOCHS)
-            data = self.phrase_data(data)
+            data = self.phrase_data(data)  # to('GPU')
             self.optimizer.zero_grad()
             out = self.model(data['img'])
             tf = time.time()

@@ -52,7 +52,7 @@ class FreiHAND(data.Dataset):
             writer.print_str('Loaded FreiHand {} {} samples'.format(self.phase, str(len(self.db_data_anno))))
         cprint('Loaded FreiHand {} {} samples'.format(self.phase, str(len(self.db_data_anno))), 'red')
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx):  # True
         if 'train' in self.phase:
             if self.cfg.DATA.CONTRASTIVE:
                 return self.get_contrastive_sample(idx)
