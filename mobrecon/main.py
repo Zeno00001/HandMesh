@@ -53,14 +53,16 @@ def main(args):
     # there is a python decorator inside
     # register MobRecon_DS automatically
     exec('from mobrecon.models.{} import {}'.format(cfg.MODEL.NAME.lower(), cfg.MODEL.NAME))
+
     # from mobrecon.datasets.multipledatasets import MultipleDatasets
     exec('from mobrecon.datasets.{} import {}'.format(cfg.TRAIN.DATASET.lower(), cfg.TRAIN.DATASET))
+
     # from mobrecon.datasets.ge import Ge
     exec('from mobrecon.datasets.{} import {}'.format(cfg.VAL.DATASET.lower(), cfg.VAL.DATASET))
 
     # dir
-    args.work_dir = osp.dirname(osp.realpath(__file__))
-    args.out_dir = osp.join(args.work_dir, 'out', cfg.TRAIN.DATASET, args.exp_name)
+    args.work_dir = osp.dirname(osp.realpath(__file__))  # HandMesh/mobrecon
+    args.out_dir = osp.join(args.work_dir, 'out', cfg.TRAIN.DATASET, args.exp_name)  # mobrecon/out/Multiple.../
     args.checkpoints_dir = osp.join(args.out_dir, 'checkpoints')
     args.board_dir = osp.join(args.out_dir, 'board')
     args.eval_dir = osp.join(args.out_dir, cfg.VAL.SAVE_DIR)
@@ -77,6 +79,7 @@ def main(args):
     writer = Writer(args)
     writer.print_str(args)
     writer.print_str(cfg)
+    # args.board_dir == 'out/MultipleDatasets/mrc_ds/board/'
     board = SummaryWriter(args.board_dir) if cfg.PHASE == 'train' and args.rank == 0 else None
 
     # model
@@ -86,20 +89,32 @@ def main(args):
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.TRAIN.LR, weight_decay=cfg.TRAIN.WEIGHT_DECAY)
 
     # resume
-    if cfg.MODEL.RESUME:
+    if cfg.PHASE == 'train':
+        if cfg.MODEL.RESUME:
+            if len(cfg.MODEL.RESUME.split('/')) > 1:
+                model_path = cfg.MODEL.RESUME
+            else:
+                model_path = osp.join(args.checkpoints_dir, cfg.MODEL.RESUME)
+            checkpoint = torch.load(model_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            epoch = checkpoint['epoch'] + 1
+            writer.print_str('Resume from: {}, start epoch: {}'.format(model_path, epoch))
+            print('Resume from: {}, start epoch: {}'.format(model_path, epoch))
+        else:
+            epoch = 0
+            writer.print_str('Train from 0 epoch')
+    elif cfg.PHASE in ['eval', 'pred', 'demo']:
+        epoch = 0
         if len(cfg.MODEL.RESUME.split('/')) > 1:
             model_path = cfg.MODEL.RESUME
         else:
             model_path = osp.join(args.checkpoints_dir, cfg.MODEL.RESUME)
-        checkpoint = torch.load(model_path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        epoch = checkpoint['epoch'] + 1
-        writer.print_str('Resume from: {}, start epoch: {}'.format(model_path, epoch))
-        print('Resume from: {}, start epoch: {}'.format(model_path, epoch))
+            checkpoint = torch.load(model_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f'Eval model in {model_path}, with dataset: {cfg.VAL.DATASET}')
     else:
-        epoch = 0
-        writer.print_str('Train from 0 epoch')
+        input('[ERROR] wrong cfg PHASE while loading model')
 
     # data
     kwargs = {"pin_memory": True, "num_workers": 4, "drop_last": True}  # num_worker: 8

@@ -369,8 +369,9 @@ class Runner(object):
         from utils.read import save_mesh
         self.set_demo(self.args)
 
-        INFER_FOLDER = '3_hand'
+        INFER_FOLDER = '0_stone'
         args = self.args
+        args.size = 128  # NEW APPEND
         self.model.eval()
         # image_fp = os.path.join(args.work_dir, 'images')
         image_fp = os.path.join(args.work_dir, 'images', INFER_FOLDER)
@@ -386,6 +387,14 @@ class Runner(object):
         bar = Bar(colored("DEMO", color='blue'), max=len(image_files))
         with torch.no_grad():
             for step, image_path in enumerate(image_files):
+                # EXP
+                # print('TPYE', type(self.face))
+                # np.save('EXP_demo/face.npy', self.face.cpu().detach().numpy())
+                # return
+                # print(f'Demo on: {image_path}')
+                # image_path = '/home/oscar/Desktop/HandMesh/mobrecon/images/0_stone/image.jpg'
+                # EXP
+
                 # image_name = image_path.split('/')[-1].split('_')[0]
                 image_name = os.path.basename(image_path).split('.')[0]  # '0000'
                 image = cv2.imread(image_path)[..., ::-1]
@@ -405,8 +414,16 @@ class Runner(object):
                 K[1, 2] = args.size // 2
 
                 out = self.model(input)
+                # print(f'input      : {input.size()}')         # (1, 3, 128, 128)
+                # print(f'output:')
+                # print(f'       vert: {out["verts"].size()}')        # (1, 778, 3)
+                # print(f'  joint_img: {out["joint_img"].size()}')    # (1, 21, 2)
+                # np.save('EXP_demo/in.npy', input.cpu().detach().numpy())
+                # np.save('EXP_demo/vert.npy', out['verts'][0].cpu().detach().numpy())
+                # np.save('EXP_demo/joint.npy', out['joint_img'][0].cpu().detach().numpy())
+                # return
                 # silhouette
-                mask_pred = out.get('mask_pred')
+                mask_pred = out.get('verts')
                 if mask_pred is not None:
                     mask_pred = (mask_pred[0] > 0.3).cpu().numpy().astype(np.uint8)
                     mask_pred = cv2.resize(mask_pred, (input.size(3), input.size(2)))
@@ -420,9 +437,9 @@ class Runner(object):
                     mask_pred = np.zeros([input.size(3), input.size(2)])
                     poly = None
                 # vertex
-                pred = out['mesh_pred'][0] if isinstance(out['mesh_pred'], list) else out['mesh_pred']
+                pred = out['verts'][0] if isinstance(out['verts'], list) else out['verts']
                 vertex = (pred[0].cpu() * self.std.cpu()).numpy()
-                uv_pred = out['uv_pred']
+                uv_pred = out['joint_img']
                 if uv_pred.ndim == 4:
                     uv_point_pred, uv_pred_conf = map2uv(uv_pred.cpu().numpy(), (input.size(2), input.size(3)))
                 else:
@@ -434,9 +451,10 @@ class Runner(object):
                 # np.savetxt(os.path.join(output_fp, image_name + '_xyz.txt'), vertex2xyz, fmt='%f')
                 np.save(os.path.join(output_fp, image_name + '_xyz.npy'), vertex2xyz)
 
-                save_a_image_with_mesh_joints(image[..., ::-1], mask_pred, poly, K, vertex, self.faces[0], uv_point_pred[0], vertex2xyz,
+                save_a_image_with_mesh_joints(image[..., ::-1], mask_pred, poly, K, vertex, self.face, uv_point_pred[0], vertex2xyz,
                                               os.path.join(output_fp, image_name + '_plot.jpg'))
-                save_mesh(os.path.join(output_fp, image_name + '_mesh.ply'), vertex, self.faces[0])
+                save_mesh(os.path.join(output_fp, image_name + '_mesh.ply'), vertex, self.face)
+                # faces is incorrect
 
                 bar.suffix = '({batch}/{size})' .format(batch=step+1, size=len(image_files))
                 bar.next()
