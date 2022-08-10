@@ -77,6 +77,8 @@ class Runner(object):
             self.eval()
         elif self.cfg.PHASE == 'pred':
             self.pred()
+        elif self.cfg.PHASE == 'demo':
+            self.demo()
         else:
             raise Exception('PHASE ERROR')
 
@@ -294,6 +296,15 @@ class Runner(object):
                     print(step, len(self.test_loader))
                 data = self.phrase_data(data)
                 out = self.model(data['img'])
+                print(f'input      : {data["img"].size()}')         # (1, 3, 128, 128)
+                print(f'output:')
+                print(f'       vert: {out["verts"].size()}')        # (1, 778, 3)
+                print(f'  joint_img: {out["joint_img"].size()}')    # (1, 21, 2)
+                np.save('new_exp/in.npy', data['img'].cpu().detach().numpy())
+                np.save('new_exp/vert.npy', out['verts'][0].cpu().detach().numpy())
+                np.save('new_exp/joint.npy', out['joint_img'][0].cpu().detach().numpy())
+                # print(f'\nval:', out['joint_img'][0])
+                return
                 # get verts pred
                 verts_pred = out['verts'][0].cpu().numpy() * 0.2
 
@@ -339,3 +350,94 @@ class Runner(object):
                 ], fo)
         self.writer.print_str('Dumped %d joints and %d verts predictions to %s' % (
             len(xyz_pred_list), len(verts_pred_list), os.path.join(self.args.work_dir, 'out', self.args.exp_name, f'{self.args.exp_name}.json')))
+
+    def set_demo(self, args):
+        import pickle
+        with open(os.path.join(args.work_dir, '../template/MANO_RIGHT.pkl'), 'rb') as f:
+            mano = pickle.load(f, encoding='latin1')
+        self.j_regressor = np.zeros([21, 778])
+        self.j_regressor[:16] = mano['J_regressor'].toarray()
+        for k, v in {16: 333, 17: 444, 18: 672, 19: 555, 20: 744}.items():
+            self.j_regressor[k, v] = 1
+        self.std = torch.tensor(0.20)
+
+    def demo(self):
+        from utils.progress.bar import Bar
+        from termcolor import colored
+        from utils.vis import registration, map2uv, base_transform
+        from utils.draw3d import save_a_image_with_mesh_joints
+        from utils.read import save_mesh
+        self.set_demo(self.args)
+
+        INFER_FOLDER = '3_hand'
+        args = self.args
+        self.model.eval()
+        # image_fp = os.path.join(args.work_dir, 'images')
+        image_fp = os.path.join(args.work_dir, 'images', INFER_FOLDER)
+        output_fp = os.path.join(args.out_dir, 'demo', INFER_FOLDER)
+        os.makedirs(output_fp, exist_ok=True)
+        ''' paths
+        input : ~/HandMesh/images/{INFER_FOLDER}/
+        output: ~/HandMesh/out/FreiHAND/mobrecon/demo/{INFER_FOLDER} /
+        '''
+
+        # image_files = [os.path.join(image_fp, i) for i in os.listdir(image_fp) if '_img.jpg' in i]
+        image_files = [os.path.join(image_fp, e) for e in os.listdir(image_fp) if e.endswith('.jpg')]  # or jpg...
+        bar = Bar(colored("DEMO", color='blue'), max=len(image_files))
+        with torch.no_grad():
+            for step, image_path in enumerate(image_files):
+                # image_name = image_path.split('/')[-1].split('_')[0]
+                image_name = os.path.basename(image_path).split('.')[0]  # '0000'
+                image = cv2.imread(image_path)[..., ::-1]
+                image = cv2.resize(image, (args.size, args.size))
+                input = torch.from_numpy(base_transform(image, size=args.size)).unsqueeze(0).to(self.device)
+
+                # print(f'processing file: {image_path}')
+                _Knpy_file_path = image_path.replace('_img.jpg', '_K.npy')
+                if os.path.isfile(_Knpy_file_path) and _Knpy_file_path.endswith('_K.npy'):  # example images' K
+                    K = np.load(_Knpy_file_path)
+                elif os.path.isfile(os.path.join(args.work_dir, 'images', 'default.npy')):  # my images' K
+                    K = np.load(os.path.join(args.work_dir, 'images', 'default.npy'))
+
+                K[0, 0] = K[0, 0] / 224 * args.size
+                K[1, 1] = K[1, 1] / 224 * args.size
+                K[0, 2] = args.size // 2
+                K[1, 2] = args.size // 2
+
+                out = self.model(input)
+                # silhouette
+                mask_pred = out.get('mask_pred')
+                if mask_pred is not None:
+                    mask_pred = (mask_pred[0] > 0.3).cpu().numpy().astype(np.uint8)
+                    mask_pred = cv2.resize(mask_pred, (input.size(3), input.size(2)))
+                    try:
+                        contours, _ = cv2.findContours(mask_pred, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        contours.sort(key=cnt_area, reverse=True)
+                        poly = contours[0].transpose(1, 0, 2).astype(np.int32)
+                    except:
+                        poly = None
+                else:
+                    mask_pred = np.zeros([input.size(3), input.size(2)])
+                    poly = None
+                # vertex
+                pred = out['mesh_pred'][0] if isinstance(out['mesh_pred'], list) else out['mesh_pred']
+                vertex = (pred[0].cpu() * self.std.cpu()).numpy()
+                uv_pred = out['uv_pred']
+                if uv_pred.ndim == 4:
+                    uv_point_pred, uv_pred_conf = map2uv(uv_pred.cpu().numpy(), (input.size(2), input.size(3)))
+                else:
+                    uv_point_pred, uv_pred_conf = (uv_pred * args.size).cpu().numpy(), [None,]
+                vertex, align_state = registration(vertex, uv_point_pred[0], self.j_regressor, K, args.size, uv_conf=uv_pred_conf[0], poly=poly)
+
+                vertex2xyz = mano_to_mpii(np.matmul(self.j_regressor, vertex))
+                # np.savetxt(os.path.join(args.out_dir, 'demotext', image_name + '_xyz.txt'), vertex2xyz)
+                # np.savetxt(os.path.join(output_fp, image_name + '_xyz.txt'), vertex2xyz, fmt='%f')
+                np.save(os.path.join(output_fp, image_name + '_xyz.npy'), vertex2xyz)
+
+                save_a_image_with_mesh_joints(image[..., ::-1], mask_pred, poly, K, vertex, self.faces[0], uv_point_pred[0], vertex2xyz,
+                                              os.path.join(output_fp, image_name + '_plot.jpg'))
+                save_mesh(os.path.join(output_fp, image_name + '_mesh.ply'), vertex, self.faces[0])
+
+                bar.suffix = '({batch}/{size})' .format(batch=step+1, size=len(image_files))
+                bar.next()
+        bar.finish()
