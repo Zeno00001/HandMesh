@@ -296,15 +296,16 @@ class Runner(object):
                     print(step, len(self.test_loader))
                 data = self.phrase_data(data)
                 out = self.model(data['img'])
-                print(f'input      : {data["img"].size()}')         # (1, 3, 128, 128)
-                print(f'output:')
-                print(f'       vert: {out["verts"].size()}')        # (1, 778, 3)
-                print(f'  joint_img: {out["joint_img"].size()}')    # (1, 21, 2)
-                np.save('new_exp/in.npy', data['img'].cpu().detach().numpy())
-                np.save('new_exp/vert.npy', out['verts'][0].cpu().detach().numpy())
-                np.save('new_exp/joint.npy', out['joint_img'][0].cpu().detach().numpy())
-                # print(f'\nval:', out['joint_img'][0])
-                return
+                # EXP
+                # print(f'input      : {data["img"].size()}')         # (1, 3, 128, 128)
+                # print(f'output:')
+                # print(f'       vert: {out["verts"].size()}')        # (1, 778, 3)
+                # print(f'  joint_img: {out["joint_img"].size()}')    # (1, 21, 2)
+                # np.save('new_exp/in.npy', data['img'].cpu().detach().numpy())
+                # np.save('new_exp/vert.npy', out['verts'][0].cpu().detach().numpy())
+                # np.save('new_exp/joint.npy', out['joint_img'][0].cpu().detach().numpy())
+                # # print(f'\nval:', out['joint_img'][0])
+                # return
                 # get verts pred
                 verts_pred = out['verts'][0].cpu().numpy() * 0.2
 
