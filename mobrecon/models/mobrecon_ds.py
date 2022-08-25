@@ -63,11 +63,11 @@ class MobRecon_DS(nn.Module):
                 pred3d = self.decoder3d(pred2d_pt, latent)
                 pred3d_list.append(pred3d)
                 pred2d_pt_list.append(pred2d_pt)
-            pred2d_pt = torch.cat(pred2d_pt_list, -1)
-            pred3d = torch.cat(pred3d_list, -1)
+            pred2d_pt = torch.cat(pred2d_pt_list, -1)  # (#, 256, 4, 4), (#, 21, 2  *2)
+            pred3d = torch.cat(pred3d_list, -1)                        # (#, 778, 3  *2)
         else:
-            latent, pred2d_pt = self.backbone(x)
-            pred3d = self.decoder3d(pred2d_pt, latent)
+            latent, pred2d_pt = self.backbone(x)  # (#, 256, 4, 4), (#, 21, 2)
+            pred3d = self.decoder3d(pred2d_pt, latent)            # (#, 778, 3)
 
         return {'verts': pred3d,
                 'joint_img': pred2d_pt

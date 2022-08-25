@@ -154,6 +154,11 @@ def main(args):
     #     print(f'steps: {step: <5}/{len(train_loader)}')
 
     # input('Success!!!') # perfect
+    # for data in train_loader:
+    #     print(data['img'].shape)
+    #     break
+    # print()
+    # input()
 
     # run
     runner = Runner(cfg, args, model, train_loader, eval_loader, test_loader, optimizer, writer, device, board, start_epoch=epoch)

@@ -32,7 +32,7 @@ class Backbone(nn.Module):
         thrink = self.thrink(pre_out_reorg)
         stack1_out = self.dense_stack1(thrink)
         stack1_out_remap = self.stack1_remap(stack1_out)
-        input2 = torch.cat((stack1_out_remap, thrink),dim=1)
+        input2 = torch.cat((stack1_out_remap, thrink),dim=1)  # Residual Connection Part
         thrink2 = self.thrink2(input2)
         stack2_out, stack2_mid = self.dense_stack2(thrink2)
         latent = self.mid_proj(stack2_mid)
