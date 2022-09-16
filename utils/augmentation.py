@@ -195,13 +195,23 @@ class Augmentation(object):
 
 
 def crop_roi(img, bbox, out_sz, padding=(0, 0, 0)):
+    '''
+    crop to bbox: [x_min, y_min, x_max, y_max] &&
+    scale to (out_sz, out_sz)
+    '''
+    # out_sz := 128
     bbox = [float(x) for x in bbox]
-    a = (out_sz - 1) / (bbox[2] - bbox[0])
-    b = (out_sz - 1) / (bbox[3] - bbox[1])
-    c = -a * bbox[0]
+    a = (out_sz - 1) / (bbox[2] - bbox[0])  # out_w / bbox_w == scaler_w
+    b = (out_sz - 1) / (bbox[3] - bbox[1])  #                   scaler_h
+    c = -a * bbox[0]                        # - x_min * scaler_w
     d = -b * bbox[1]
     mapping = np.array([[a, 0, c],
                         [0, b, d]]).astype(np.float)
+    # [u', v'] ^T = mapping @ [u, v, 1] ^T
+    # move the image to (c, d)
+    # u' = a * u + c
+    # v' = b * v + d
+    # 將 (u, v) 放大 (a, b) 倍，再將整張圖往左上移動 (c, d)，取 (out_sz, out_sz) 區域的圖
     crop = cv2.warpAffine(img, mapping, (out_sz, out_sz),
                           borderMode=cv2.BORDER_CONSTANT,
                           borderValue=padding)

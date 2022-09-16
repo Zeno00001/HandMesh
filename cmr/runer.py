@@ -171,6 +171,12 @@ class Runner(object):
             for step, data in enumerate(self.eval_loader):
                 data = self.phrase_data(data)
                 out = self.model(data['img'])
+                # np.save('EXP_pred/img_old.npy', data['img'].permute((0, 2, 3, 1)).reshape((128, 128, 3)).cpu().numpy())
+                # np.save('EXP_pred/out_vert_old.npy', out['mesh_pred'][0].cpu().numpy())
+                # np.save('EXP_pred/out_joint_old.npy', out['uv_pred'][0].cpu().numpy())
+                # np.save('EXP_pred/regressor_old', self.j_regressor)
+                # return
+
                 # silhouette
                 mask_pred = out.get('mask_pred')
                 if mask_pred is not None:
@@ -196,6 +202,10 @@ class Runner(object):
                 vertex, align_state = registration(vertex, uv_point_pred[0], self.j_regressor, data['K'][0].cpu().numpy(), args.size, uv_conf=uv_pred_conf[0], poly=poly)
 
                 vertex2xyz = mano_to_mpii(np.matmul(self.j_regressor, vertex))
+
+                # np.save('EXP_pred/vertex2xyz_old.npy', vertex2xyz)
+                # np.save('EXP_pred/vertex_old.npy', vertex)
+                # raise Exception('Hello World')
                 xyz_pred_list.append(vertex2xyz)
                 verts_pred_list.append(vertex)
                 if args.phase == 'eval':

@@ -52,12 +52,18 @@ def registration(vertex, uv, j_regressor, K, size, uv_conf=None, poly=None):
     :param poly: contours from silhouette
     :return: camera-space vertex
     """
+    # print(f'verts: {vertex.shape}')
+    # print(f'uv   : {uv.shape}')
+    # print(f'j_reg: {j_regressor.shape}')
+    # print(f'calib: {K}')  # u0 = 64
+    # print(f'size : {size}')
+    # print(f'poly : {poly}') # None
     t = np.array([0, 0, 0.6])
     bounds = ((None, None), (None, None), (0.3, 2))
     poly_protect = [0.06, 0.02]
 
     vertex2xyz = np.matmul(j_regressor, vertex)
-    if vertex2xyz.shape[0] == 21:
+    if vertex2xyz.shape[0] == 21:  # True
         vertex2xyz = mano_to_mpii(vertex2xyz)
     try_poly = True
     if uv_conf is None:
@@ -70,21 +76,29 @@ def registration(vertex, uv, j_regressor, K, size, uv_conf=None, poly=None):
         attempt = 5
         while loss.mean() > 2 and attempt:
             attempt -= 1
+            # print(f'{uv.shape}, uv={uv}')
+            # print(f'{uv_conf.shape}, uv_conf={uv_conf}')
             uv = uv[uv_select.repeat(2, axis=1)].reshape(-1, 2)
             uv_conf = uv_conf[uv_select].reshape(-1, 1)
+            # print('--- After ---')
+            # print(f'{uv.shape}, uv={uv}')
+            # print(f'{uv_conf.shape}, uv_conf={uv_conf}')
+            # input('continue...')
             vertex2xyz = vertex2xyz[uv_select.repeat(3, axis=1)].reshape(-1, 3)
             sol = minimize(align_uv, t, method='SLSQP', bounds=bounds, args=(uv, vertex2xyz, K))
             t = sol.x
             success = sol.success
             xyz = vertex2xyz + t
-            proj = np.matmul(K, xyz.T).T
-            uvz = np.concatenate((uv, np.ones([uv.shape[0], 1])), axis=1) * xyz[:, 2:]
+            proj = np.matmul(K, xyz.T).T  # K @ [[x1 x2 x3...] [y1 y2 y3...] [z1 z2 z3...]] -> not normalized yet (by z)
+            uvz = np.concatenate((uv, np.ones([uv.shape[0], 1])), axis=1) * xyz[:, 2:]  # [u v 1] -> [uz vz z]
             loss = abs((proj - uvz).sum(axis=1))
+            # print(f'loss: {loss.mean()}')
             uv_select = loss < loss.mean() + loss.std()
             if uv_select.sum() < 13:
                 break
             uv_select = uv_select[:, np.newaxis]
-
+        # print(f't={t}')
+        # raise Exception('Hello registration')
     if poly is not None and try_poly:
         poly = find_1Dproj(poly[0]) / size
         sol = minimize(align_poly, np.array([0, 0, 0.6]), method='SLSQP', bounds=bounds, args=(poly, vertex, K, size))

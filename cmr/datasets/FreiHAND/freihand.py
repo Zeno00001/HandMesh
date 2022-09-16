@@ -18,7 +18,7 @@ class FreiHAND(data.Dataset):
         self.root = root
         self.phase = phase
         self.down_sample_list = down_sample_list
-        self.size = args.size
+        self.size = args.size  # 128
         self.faces = faces
         self.img_std = img_std
         self.img_mean = img_mean
@@ -142,13 +142,14 @@ class FreiHAND(data.Dataset):
             br_x = int(center[0] + size + x_shift)
             br_y = int(center[1] + size + y_shift)
         else:
-            size = 100 / 2 * 1.3
+            size = 100 / 2 * 1.3  # crop image to (130, 130)
             tl_x = int(img.shape[1]/2-size)
             tl_y = int(img.shape[0]/2-size)
             br_x = int(img.shape[1]/2+size)
             br_y = int(img.shape[0]/2+size)
 
-        scale = self.size / 2 / size
+        scale = self.size / 2 / size  # scale * 130 => self.size == 128
+        # crop & resize
         img = crop_roi(img, (tl_x, tl_y, br_x, br_y), self.size)
         if mask is not None:
             mask = crop_roi(mask, (tl_x, tl_y, br_x, br_y), self.size)
