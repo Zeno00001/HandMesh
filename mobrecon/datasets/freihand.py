@@ -279,6 +279,7 @@ class FreiHAND(data.Dataset):
         # s     : 放大倍率 = roi.size(1) / (bbox[2]*aug_param[1])
         # Um, Vm: 平移距離 = roi.size(1) * aug_param[2], ...[3]
         #                                平移 x 佔整張圖的比例
+        # Evaluation 時，不會有 shift，只會有 bbox 的移動
 
         # Joint, augmentation_2d, just like get_training_sample() do
         princpt = trans_point2d(princpt, img2bb_trans)
