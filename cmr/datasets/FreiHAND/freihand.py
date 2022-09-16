@@ -158,7 +158,7 @@ class FreiHAND(data.Dataset):
             uv[:, 1] = (uv[:, 1] - tl_y) * scale
         K[0, 0] *= scale
         K[1, 1] *= scale
-        K[0, 2] = scale*(K[0, 2]-tl_x+0.5) - 0.5
+        K[0, 2] = scale*(K[0, 2]-tl_x+0.5) - 0.5 # == scale * (U0 - min_x) + (scale-1) * 0.5 ??
         K[1, 2] = scale*(K[1, 2]-tl_y+0.5) - 0.5
         ret = [img, K]
         if uv is not None:
