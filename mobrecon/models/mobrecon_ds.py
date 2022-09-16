@@ -99,6 +99,33 @@ class MobRecon_DS(nn.Module):
 
         return loss_dict
 
+class Test(nn.Module):
+    def __init__(self, cfg):
+        super(Test, self).__init__()
+        self.cfg = cfg
+        cur_dir = os.path.dirname(os.path.realpath(__file__))
+        template_fp = os.path.join(cur_dir, '../../template/template.ply')
+        transform_fp = os.path.join(cur_dir, '../../template', 'transform.pkl')
+        spiral_indices, _, up_transform, tmp = spiral_tramsform(transform_fp,
+                                                                template_fp,
+                                                                cfg.MODEL.SPIRAL.DOWN_SCALE,
+                                                                cfg.MODEL.SPIRAL.LEN,
+                                                                cfg.MODEL.SPIRAL.DILATION)
+        for i in range(len(up_transform)):
+            up_transform[i] = (*up_transform[i]._indices(), up_transform[i]._values())
+        self.decoder3d = Reg2DDecode3D(cfg.MODEL.LATENT_SIZE, 
+                                       cfg.MODEL.SPIRAL.OUT_CHANNELS, 
+                                       spiral_indices, 
+                                       up_transform, 
+                                       cfg.MODEL.KPTS_NUM,
+                                       meshconv=(SpiralConv, DSConv)[cfg.MODEL.SPIRAL.TYPE=='DSConv'])
+
+    def forward(self, pred2d_pt, latent):   # (#, 256, 4, 4), (#, 21, 2)
+        pred3d = self.decoder3d(pred2d_pt, latent)            # (#, 778, 3)
+
+        return {'verts': pred3d,
+                'joint_img': pred2d_pt
+                }
 
 if __name__ == '__main__':
     """Test the model
@@ -109,6 +136,15 @@ if __name__ == '__main__':
     args.config_file = 'mobrecon/configs/mobrecon_ds.yml'
     cfg = setup(args)
 
-    model = MobRecon_DS(cfg)
-    model_out = model(torch.zeros(2, 6, 128, 128))
-    print(model_out['verts'].size())
+    # model = MobRecon_DS(cfg)
+    # model_out = model(torch.zeros(2, 6, 128, 128))
+    # print(model_out['verts'].size())
+
+    model = Test(cfg)
+    model.eval()
+    # (#, 256, 4, 4), (#, 21, 2)
+    pred2d_pt, latent = torch.empty(32, 21, 2), torch.empty(32, 256, 7, 7)
+    with torch.no_grad():
+        # model_out = model(torch.empty(2, 3, 128, 128))
+        model_out = model(pred2d_pt, latent)
+        print(model_out['verts'].size())
