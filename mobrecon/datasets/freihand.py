@@ -280,6 +280,9 @@ class FreiHAND(data.Dataset):
         # Um, Vm: 平移距離 = roi.size(1) * aug_param[2], ...[3]
         #                                平移 x 佔整張圖的比例
 
+        # Joint, augmentation_2d, just like get_training_sample() do
+        princpt = trans_point2d(princpt, img2bb_trans)
+
         # K
         focal = focal * roi.size(1) / (bbox[2]*aug_param[1])  # 放大倍率為：result(roi) / origin(bbox*scale, 擴大 bbox 擷取框框的部份)
         calib = np.eye(4)
