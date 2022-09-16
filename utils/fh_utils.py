@@ -241,6 +241,7 @@ def read_mask_woclip(idx, base_path, set_name):
 
 
 def read_mesh(idx, base_path):
+    # print(f'read {idx}.ply')
     mesh_path = os.path.join(base_path, 'training', 'mesh',
                              '%08d.ply' % idx)
     _assert_exist(mesh_path)    # error on `data/FreiHAND/training/mask/00028376.jpg`

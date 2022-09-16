@@ -37,24 +37,27 @@ class MultipleDatasets(Dataset):  # combine 2 datasets
             return sum([len(db) for db in self.dbs])
 
     def __getitem__(self, index):
-        if self.make_same_len:
-            db_idx = index // self.max_db_data_num
-            data_idx = index % self.max_db_data_num
-            if data_idx >= len(self.dbs[db_idx]) * (self.max_db_data_num // len(self.dbs[db_idx])): # last batch: random sampling
-                data_idx = random.randint(0,len(self.dbs[db_idx])-1)
-            else: # before last batch: use modular
-                data_idx = data_idx % len(self.dbs[db_idx])
-        else:
-            for i in range(self.db_num):
-                if index < self.db_len_cumsum[i]:  # ind(10), [4, 8, 15] in 3rd dataset
-                    db_idx = i
-                    break
-            if db_idx == 0:
-                data_idx = index
+        try:
+            if self.make_same_len:
+                db_idx = index // self.max_db_data_num
+                data_idx = index % self.max_db_data_num
+                if data_idx >= len(self.dbs[db_idx]) * (self.max_db_data_num // len(self.dbs[db_idx])): # last batch: random sampling
+                    data_idx = random.randint(0,len(self.dbs[db_idx])-1)
+                else: # before last batch: use modular
+                    data_idx = data_idx % len(self.dbs[db_idx])
             else:
-                data_idx = index - self.db_len_cumsum[db_idx-1]  # ind(10), (-8) -> self.dbs[1][2]
-        # print(f'get dbs[{db_idx}][{data_idx}]')
-        return self.dbs[db_idx][data_idx]
+                for i in range(self.db_num):
+                    if index < self.db_len_cumsum[i]:  # ind(10), [4, 8, 15] in 3rd dataset
+                        db_idx = i
+                        break
+                if db_idx == 0:
+                    data_idx = index
+                else:
+                    data_idx = index - self.db_len_cumsum[db_idx-1]  # ind(10), (-8) -> self.dbs[1][2]
+            # print(f'get dbs[{db_idx}][{data_idx}]')
+            return self.dbs[db_idx][data_idx]
+        except:
+            raise Exception(f'--- [Error] at data[{index}] ---')
 
 if __name__ == '__main__':
     """Test the dataset
