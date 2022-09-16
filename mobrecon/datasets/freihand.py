@@ -22,7 +22,7 @@ from utils.vis import base_transform, inv_base_tranmsform, cnt_area
 import cv2
 from utils.augmentation import Augmentation
 from termcolor import cprint
-from utils.preprocessing import augmentation, augmentation_2d
+from utils.preprocessing import augmentation, augmentation_2d, trans_point2d
 from mobrecon.tools.kinematics import MPIIHandJoints
 from mobrecon.models.loss import contrastive_loss_3d, contrastive_loss_2d
 import vctoolkit as vc
@@ -79,6 +79,7 @@ class FreiHAND(data.Dataset):
         bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]
         K, mano, joint_cam = self.db_data_anno[idx]
         K, joint_cam, mano = np.array(K), np.array(joint_cam), np.array(mano)
+        # print(f'K:\n{K}')
         joint_img = projectPoints(joint_cam, K)
         princpt = K[0:2, 2].astype(np.float32)
         focal = np.array( [K[0, 0], K[1, 1]], dtype=np.float32)
@@ -142,6 +143,7 @@ class FreiHAND(data.Dataset):
             aug_param_list.append(aug_param)
             bb2img_trans_list.append(bb2img_trans)
 
+        # print(f'calib:\n{calib_list[0]}')
         roi = torch.cat(roi_list, 0)
         mask = torch.cat(mask_list, 0)
         calib = torch.cat(calib_list, 0)
@@ -213,6 +215,13 @@ class FreiHAND(data.Dataset):
         rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
                                 [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
                                 [0, 0, 1]], dtype=np.float32)
+        ''' 拇指朝 z+ 方向旋轉 (-rot) 度
+        | cos(-rot) | -sin(-rot) | 0 |
+        | sin(-rot) |  cos(-rot) | 0 |
+        |     0     |    0       | 1 |
+
+        因為 內部的 rot 是指旋轉 bbox! 旋轉後的 bbox 再經由 affine trans 轉到輸出圖片座標時，事實上做的旋轉是倒過來的
+        '''
         joint_cam = np.dot(rot_aug_mat, joint_cam.T).T
         vert = np.dot(rot_aug_mat, vert.T).T
 
@@ -248,10 +257,10 @@ class FreiHAND(data.Dataset):
         K = np.array(K)
         princpt = K[0:2, 2].astype(np.float32)
         focal = np.array( [K[0, 0], K[1, 1]], dtype=np.float32)
-        bbox = [img.shape[1]//2-50, img.shape[0]//2-50, 100, 100]
+        bbox = [img.shape[1]//2-50, img.shape[0]//2-50, 100, 100]  # img: (224, 224), bbox=[62, 62, 100, 100]
         center = [bbox[0]+bbox[2]*0.5, bbox[1]+bbox[3]*0.5]
         w, h = bbox[2], bbox[3]
-        bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]
+        bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]  # square(left, top, w, h)
 
         # aug
         roi, img2bb_trans, bb2img_trans, aug_param, do_flip, scale, _ = augmentation(img, bbox, self.phase,
@@ -263,18 +272,25 @@ class FreiHAND(data.Dataset):
                                                                                         rot_factor=self.cfg.DATA.FREIHAND.ROT,
                                                                                         shift_wh=[bbox[2], bbox[3]],
                                                                                         gaussian_std=self.cfg.DATA.STD)
+        # aug_param: [旋轉徑度, bbox 放大倍率(框到更多手外圍的圖), 平移 x 佔畫面比例, 平移 y 佔畫面比例]
         roi = base_transform(roi, self.cfg.DATA.SIZE, mean=self.cfg.DATA.IMG_MEAN, std=self.cfg.DATA.IMG_STD)
         roi = torch.from_numpy(roi).float()
 
+        # s     : 放大倍率 = roi.size(1) / (bbox[2]*aug_param[1])
+        # Um, Vm: 平移距離 = roi.size(1) * aug_param[2], ...[3]
+        #                                平移 x 佔整張圖的比例
+
         # K
-        focal = focal * roi.size(1) / (bbox[2]*aug_param[1])
+        focal = focal * roi.size(1) / (bbox[2]*aug_param[1])  # 放大倍率為：result(roi) / origin(bbox*scale, 擴大 bbox 擷取框框的部份)
         calib = np.eye(4)
         calib[0, 0] = focal[0]
         calib[1, 1] = focal[1]
         calib[:2, 2:3] = princpt[:, None]
+        # print(f'K:\n{K}')
+        # print(f'calib:\n{calib}')
         calib = torch.from_numpy(calib).float()
 
-        return {'img': roi, 'calib': calib}
+        return {'img': roi, 'calib': calib, 'idx': idx}
 
     def __len__(self):
 
@@ -352,8 +368,12 @@ if __name__ == '__main__':
     args.config_file = 'mobrecon/configs/mobrecon_ds.yml'
     cfg = setup(args)
 
-    dataset = FreiHAND(cfg, 'train')
+    dataset = FreiHAND(cfg, 'eval')
     for i in range(0, len(dataset), len(dataset)//10):
         print(i)
         data = dataset.__getitem__(i)
         dataset.visualization(data, i)
+
+    # idx = 4
+    # data = dataset[idx]
+    # dataset.visualization(data, idx)

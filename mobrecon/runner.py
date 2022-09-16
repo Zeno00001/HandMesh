@@ -294,6 +294,7 @@ class Runner(object):
             for step, data in enumerate(self.test_loader):
                 if self.board is None and step % 100 == 0:
                     print(step, len(self.test_loader))
+                # print(f'Eval on image[{data["idx"].cpu()}]')
                 data = self.phrase_data(data)
                 out = self.model(data['img'])
                 # EXP
@@ -301,13 +302,16 @@ class Runner(object):
                 # print(f'output:')
                 # print(f'       vert: {out["verts"].size()}')        # (1, 778, 3)
                 # print(f'  joint_img: {out["joint_img"].size()}')    # (1, 21, 2)
-                # np.save('new_exp/in.npy', data['img'].cpu().detach().numpy())
-                # np.save('new_exp/vert.npy', out['verts'][0].cpu().detach().numpy())
-                # np.save('new_exp/joint.npy', out['joint_img'][0].cpu().detach().numpy())
-                # # print(f'\nval:', out['joint_img'][0])
+                # data['img'].permute((0, 2, 3, 1)).reshape((128, 128, 3))
+                # np.save('EXP_pred/img_new.npy', data['img'].permute((0, 2, 3, 1)).reshape((128, 128, 3)).cpu().numpy())
+                # np.save('EXP_pred/out_vert_new.npy', out['verts'][0].cpu().numpy())
+                # np.save('EXP_pred/out_joint_new.npy', out['joint_img'][0].cpu().numpy())
+
+                # np.save('EXP_pred/regressor_new', self.j_reg)
                 # return
+
                 # get verts pred
-                verts_pred = out['verts'][0].cpu().numpy() * 0.2
+                verts_pred = out['verts'][0].cpu().numpy() * 0.2 # old line: 195
 
                 # get mask pred
                 mask_pred = out.get('mask')
@@ -332,6 +336,9 @@ class Runner(object):
                 # get joint_cam
                 joint_cam_pred = mano_to_mpii(np.matmul(self.j_reg, verts_pred))
 
+                # np.save('EXP_pred/joint_cam_pred_new.npy', joint_cam_pred)
+                # np.save('EXP_pred/verts_pred_new.npy', verts_pred)
+                # raise Exception('Hello runner')
                 # track data
                 xyz_pred_list.append(joint_cam_pred)
                 verts_pred_list.append(verts_pred)

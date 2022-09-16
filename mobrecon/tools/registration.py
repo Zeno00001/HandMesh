@@ -32,11 +32,17 @@ def registration(vertex, uv, j_regressor, calib, size, uv_conf=None, poly=None):
     Returns:
         array: camera-space vertex
     """
+    # print(f'verts: {vertex.shape}')
+    # print(f'uv   : {uv.shape}')
+    # print(f'j_reg: {j_regressor.shape}')
+    # print(f'calib: {calib}') # u0 = 128
+    # print(f'size : {size}')
+    # print(f'poly : {poly}')
     t = np.array([0, 0, 0.6])
     bounds = ((None, None), (None, None), (0.05, 2))
     poly_protect = [0.06, 0.02]
 
-    vertex2xyz = mano_to_mpii(np.matmul(j_regressor, vertex))
+    vertex2xyz = mano_to_mpii(np.matmul(j_regressor, vertex))  # (21, 3)
     try_poly = True
     if uv_conf is None:
         uv_conf = np.ones([uv.shape[0], 1])
@@ -46,21 +52,40 @@ def registration(vertex, uv, j_regressor, calib, size, uv_conf=None, poly=None):
     else:
         loss = np.array([5, ])
         attempt = 5
+        # t=np.array([-0.0732776, 0.02347378, 1.0091181])
+        # print('init loss:', align_uv(t, uv, vertex2xyz, calib))
+        # raise Exception('1231')
         while loss.mean() > 2 and attempt:
             attempt -= 1
+            # print(f'{uv.shape}, uv={uv}')
+            # print(f'{uv_conf.shape}, uv_conf={uv_conf}')
             uv = uv[uv_select.repeat(2, axis=1)].reshape(-1, 2)
             uv_conf = uv_conf[uv_select].reshape(-1, 1)
+            # print('--- After ---')
+            # print(f'{uv.shape}, uv={uv}')
+            # print(f'{uv_conf.shape}, uv_conf={uv_conf}')
+            # input('continue...')
+            
             vertex2xyz = vertex2xyz[uv_select.repeat(3, axis=1)].reshape(-1, 3)
             sol = minimize(align_uv, t, method='SLSQP', bounds=bounds, args=(uv, vertex2xyz, calib))
             t = sol.x
+            # t = np.array([-0.0732776, 0.02347378, 1.0091181])
             success = sol.success
             xyz = vertex2xyz + t
             proj = perspective_np(xyz, calib)[:, :2]
             loss = abs((proj - uv).sum(axis=1))
+            # print(f'1st, loss={loss.mean()}')
+            # proj = np.matmul(calib, xyz.T).T
+            # uvz = np.concatenate((uv, np.ones([uv.shape[0], 1])), axis=1) * xyz[:, 2:]
+            # loss = abs((proj - uvz).sum(axis=1))
+
             uv_select = loss < loss.mean() + loss.std()
             if uv_select.sum() < 13:
                 break
             uv_select = uv_select[:, np.newaxis]
+        # print(f'loss: {loss.mean()}')
+        # print(f't={t}')
+        # raise Exception('Hello registration')
 
     if poly is not None and try_poly:
         poly = find_1Dproj(poly[0]) / size

@@ -47,6 +47,9 @@ def perspective_np(points, calibrations):
     Returns:
         array: [BxNx3] Tensor of uvz coordinates in the image plane
     """
+    # print(f'points: {points.shape}')
+    # print(f'calib : {calibrations.shape}')
+
     if points.shape[1] == 2:
         points = np.concatenate([points, np.ones([points.shape[0], 1])], -1)
     z = points[:, 2:3].copy()

@@ -95,13 +95,20 @@ def get_aug_config(exclude_flip, base_scale=1.1, scale_factor=0.25, rot_factor=6
 def augmentation(img, bbox, data_split, exclude_flip=False, input_img_shape=(256, 256), mask=None, base_scale=1.1, scale_factor=0.25, rot_factor=60, shift_wh=None, gaussian_std=1, color_aug=False):
     if data_split == 'train':
         scale, rot, shift, color_scale, do_flip = get_aug_config(exclude_flip, base_scale=base_scale, scale_factor=scale_factor, rot_factor=rot_factor, gaussian_std=gaussian_std)
+        # scale = 1.5
+        # rot = 60
+        # shift = [1, 0]
+        # color_scale = np.array([0, 0, 0], dtype=np.float32)
+        # do_flip = False
     else:
         scale, rot, shift, color_scale, do_flip = base_scale, 0.0, [0, 0], np.array([1, 1, 1]), False
 
+    # bbox= [left, top, width, height]
     img, trans, inv_trans, mask, shift_xy = generate_patch_image(img, bbox, scale, rot, shift, do_flip, input_img_shape, shift_wh=shift_wh, mask=mask)
     if color_aug:
         img = np.clip(img * color_scale[None, None, :], 0, 255)
     return img, trans, inv_trans, np.array([rot, scale, *shift_xy]), do_flip, input_img_shape[0]/(bbox[3]*scale), mask
+                                                                            # input_img_shape[0]/(bbox[3]*scale) = scale: 新圖大小 / 舊圖大小
 
 
 def augmentation_2d(img, joint_img, princpt, trans, do_flip):
@@ -119,10 +126,24 @@ def augmentation_2d(img, joint_img, princpt, trans, do_flip):
 
 
 def generate_patch_image(cvimg, bbox, scale, rot, shift, do_flip, out_shape, shift_wh=None, mask=None):
+    '''
+    collect
+    - original image: cvimg
+    - square bbox: bbox [left, top, w, h]
+    - model input size: out_shape
+    - mask: mask
+    - augment param: scale, rot, shift...
+      shift_wh: bbox - w, h
+      shift   : (-1~+1, -1~+1), gaussian distribution
+
+    return
+    - transformed image, matrix, shift value(平移)
+    '''
+    # out_shape: 128, model input
     img = cvimg.copy()
     img_height, img_width, img_channels = img.shape
 
-    bb_c_x = float(bbox[0] + 0.5 * bbox[2])
+    bb_c_x = float(bbox[0] + 0.5 * bbox[2])  # center
     bb_c_y = float(bbox[1] + 0.5 * bbox[3])
     bb_width = float(bbox[2])
     bb_height = float(bbox[3])
@@ -145,6 +166,9 @@ def generate_patch_image(cvimg, bbox, scale, rot, shift, do_flip, out_shape, shi
 
 
 def rotate_2d(pt_2d, rot_rad):
+    '''
+    將點 pt_2d 沿著原點旋轉 rot_rad 徑, 3.14 rad == 180 degree
+    '''
     x = pt_2d[0]
     y = pt_2d[1]
     sn, cs = np.sin(rot_rad), np.cos(rot_rad)
@@ -154,11 +178,42 @@ def rotate_2d(pt_2d, rot_rad):
 
 
 def gen_trans_from_patch_cv(c_x, c_y, src_width, src_height, dst_width, dst_height, scale, rot, shift, shift_wh=None, inv=False, return_shift=False):
+    '''
+    get affine transformation matrix from...>
+
+    origin bbox information
+        {c_x, c_y, src_width, src_height}
+    result image size ... model input size
+        {dst_width, dst_height}
+    augment param
+        {scale, rot, shift, shift_wh}
+        shift_wh: bbox - w, h
+        shift   : (-1~+1, -1~+1), gaussian distribution
+
+    other param for output choice
+        {inv, return_shift}
+        return inverse version transformation matrix
+        also return shift center value: 平移距離 佔圖片邊長的多少比例
+    ---
+    procedure:
+    scale 放大 輸入 w, h
+    宣告 downdir, rightdir: 用來指向 bbox 的下方以及右側 (之後做 Affine trans matrix 會用到)
+    將 downdir, rightdir 做旋轉的 augmentation
+        現在的 bbox 框框已經是斜斜的，由 down/right-dir 畫出來的框框
+
+    製作一個 Affine trans matrix ，從原先的 bbox 轉換到輸出大小的圖片座標
+    point pairs: {
+        bbox center : out center,
+        bbox + down : out + h/2,
+        bbox + right: out + w/2
+    }
+    '''
     # augment size with scale
     src_w = src_width * scale
     src_h = src_height * scale
     if shift_wh is not None:
-        shift_lim = (max((src_w - shift_wh[0]) / 2, 0), max((src_h - shift_wh[1]) / 2, 0))
+        shift_lim = (max((src_w - shift_wh[0]) / 2, 0),  # shift_lim[0] = (new_bbox.w - origin_bbox.w) / 2, if scale > 1
+                     max((src_h - shift_wh[1]) / 2, 0))  #              = 可以正負移動的極限值，往右移動: 若是 scale >1，則手的畫面會在左側，不會被切掉
         x_shift = shift[0] * shift_lim[0]
         y_shift = shift[1] * shift_lim[1]
     else:
@@ -169,6 +224,7 @@ def gen_trans_from_patch_cv(c_x, c_y, src_width, src_height, dst_width, dst_heig
     rot_rad = np.pi * rot / 180
     src_downdir = rotate_2d(np.array([0, src_h * 0.5], dtype=np.float32), rot_rad)
     src_rightdir = rotate_2d(np.array([src_w * 0.5, 0], dtype=np.float32), rot_rad)
+    # downdir: cropped 圖片，中央直線向下的向量，經旋轉後的位置
 
     dst_w = dst_width
     dst_h = dst_height
@@ -193,7 +249,7 @@ def gen_trans_from_patch_cv(c_x, c_y, src_width, src_height, dst_width, dst_heig
 
     trans = trans.astype(np.float32)
     if return_shift:
-        return trans, [x_shift/src_w, y_shift/src_h]
+        return trans, [x_shift/src_w, y_shift/src_h]  # 平移的比例 佔整張圖的多少
     return trans
 
 
