@@ -369,15 +369,15 @@ if __name__ == '__main__':
     from options.cfg_options import CFGOptions
 
     args = CFGOptions().parse()
-    args.config_file = 'mobrecon/configs/mobrecon_ds.yml'
+    args.config_file = 'mobrecon/configs/mobrecon_rs.yml'
     cfg = setup(args)
 
-    dataset = FreiHAND(cfg, 'eval')
-    for i in range(0, len(dataset), len(dataset)//10):
-        print(i)
-        data = dataset.__getitem__(i)
-        dataset.visualization(data, i)
+    dataset = FreiHAND(cfg, 'train')
+    # for i in range(0, len(dataset), len(dataset)//10):
+    #     print(i)
+    #     data = dataset.__getitem__(i)
+    #     dataset.visualization(data, i)
 
-    # idx = 4
-    # data = dataset[idx]
-    # dataset.visualization(data, idx)
+    idx = 1090
+    data = dataset[idx]
+    dataset.visualization(data, idx)

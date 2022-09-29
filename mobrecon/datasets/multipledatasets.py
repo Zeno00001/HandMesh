@@ -57,19 +57,22 @@ class MultipleDatasets(Dataset):  # combine 2 datasets
             # print(f'get dbs[{db_idx}][{data_idx}]')
             return self.dbs[db_idx][data_idx]
         except:
-            raise Exception(f'--- [Error] at data[{index}] ---')
+            raise Exception(f'--- [Error] at data[{index}] --- DB: {db_idx}, data: {data_idx}')
 
 if __name__ == '__main__':
     """Test the dataset
     """
-    from mobhand.main import setup
+    # from mobhand.main import setup
+    from mobrecon.main import setup
     from options.cfg_options import CFGOptions
 
     args = CFGOptions().parse()
-    args.config_file = 'mobrecon/configs/mobrecon_ds.yml'
+    args.config_file = 'mobrecon/configs/mobrecon_rs.yml'
     cfg = setup(args)
 
     dataset = MultipleDatasets(cfg)
+    img = dataset[175789]
+    exit()
 
     for i in range(0, len(dataset), len(dataset) // 10):
         print(i)

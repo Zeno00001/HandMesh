@@ -313,10 +313,12 @@ if __name__ == '__main__':
     from options.cfg_options import CFGOptions
 
     args = CFGOptions().parse()
-    args.config_file = 'mobrecon/configs/mobrecon_ds.yml'
+    args.config_file = 'mobrecon/configs/mobrecon_rs.yml'
     cfg = setup(args)
 
     dataset = CompHand(cfg, 'train')
+    dataset[43206]
+    exit()
     for i in range(0, len(dataset), len(dataset)//10):
         print(i)
         data = dataset.__getitem__(i)

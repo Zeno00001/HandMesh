@@ -4,7 +4,7 @@ MODEL:
   NAME: MobRecon_RS
   SPIRAL:
     TYPE: 'DSConv'
-  # RESUME: checkpoint_last.pt
+  RESUME: checkpoint_last.pt
 DATA:
   SIZE: 224
   CONTRASTIVE: True
