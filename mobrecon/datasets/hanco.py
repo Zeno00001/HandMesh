@@ -25,6 +25,9 @@ contains:
     numpy = { ... }
     ply = { ... }
 
+directory name:
+f'{seq_id:04d}', f'cam{cam_id}', f'{frame_id:08d}'
+
 --- Descriptions of Criterions --- Decide Train/Test set ---
 
 1. is_train                 : if a sequence is under a green background
@@ -42,7 +45,7 @@ Testing set : Crit 3 - (Crit 2) == Crit 3 & (not Crit 2)
 
 --- FORMAT ---
 
-| ------------------  rgb/  ------------------- | ---------------  rgb_merged/  --------------- | rgb_color_asample/ | rgb_color_auto/ | 
+| ------------------  rgb/  ------------------- | -------------  rgb_color_auto/  ------------- | ... | 
 | train sequence 1  | train sequence 2  | ...   | train sequence 1  | train sequence 2  | ...   |
 |   cam0 - cam7     |   cam0 - cam7     | ...   |   cam0 - cam7     |   cam0 - cam7     | ...   |
 
@@ -60,6 +63,19 @@ dataset[i]
 | ----- | ------------------------------- | ------------------------------- |
 | Test  | i / 8, i % 8                    | seq_id * 8 + cam_id             |
 | ----- | ------------------------------- | ------------------------------- |
+
+dataset[i] = {
+    'img': (#, 3, *shape),
+    'mask': (#, *shape),
+
+    'joint_cam': (#, 21, 3),
+    'joint_img': (#, 21, 2),
+    'verts': (#, 778, 3),
+
+    'root': (#, 3),
+    'calib': (#, 4, 4),
+}
+
 '''
 
 import sys
@@ -69,7 +85,9 @@ import json
 import torch
 import torch.utils.data as data
 import numpy as np
-from utils.fh_utils import load_db_annotation, read_mesh, read_img, read_img_abs, read_mask_woclip, projectPoints
+from utils.fh_utils import load_db_annotation, read_mesh, read_img_abs, read_mask_woclip, projectPoints
+from utils.hanco_utils import read_img, read_mask, read_annot
+
 from utils.vis import base_transform, inv_base_tranmsform, cnt_area
 import cv2
 from utils.augmentation import Augmentation
@@ -82,23 +100,36 @@ from mobrecon.build import DATA_REGISTRY
 
 @DATA_REGISTRY.register()
 class HanCo(data.Dataset):
-    def __init__(self, cfg, phase='train') -> None:
+    def __init__(self, cfg, frame_counts=8, phase='train'):
         '''Init a FreiHAND Dataset
 
         Args:
             cfg : config file
+            frame_counts: (int, Required): transformer got how many frames at a time. Default to 8.
             phase (str, optional): train or eval. Defaults to 'train'.
         '''
         super(HanCo, self).__init__()
         self.cfg = cfg
         self.phase = phase
+        assert phase in ('train', 'test'), f'phase should be "train" or "test", got: {phase}'
+        self.frame_counts = frame_counts
+        assert 1 < frame_counts <= 20, f'frame_counts should be in (2, 21), got: {frame_counts}'
+
+        self.hanco_root = self.cfg.DATA.HANCO.ROOT
+
         self.train_seq, self.test_seq = self._get_valid_sequence(
-            hanco_root=self.cfg.DATA.HANCO.ROOT, DEBUG=False
+            hanco_root=self.hanco_root, DEBUG=False
         )
         self.image_aug = ['rgb', 'rgb_color_auto', 'rgb_color_sample', 'rgb_homo', 'rgb_merged']
         self.len_train_seq_cam = len(self.train_seq) * 8  # (sequence X cam) counts of all augment folders
 
         self.color_aug = Augmentation() if cfg.DATA.COLOR_AUG and 'train' in self.phase else None
+        cprint(f'Loaded HanCo {self.phase} {self.__len__()} sequences', 'red')
+        if self.phase == 'train':
+            cprint(f'  with {len(self.image_aug)} image folders, {len(self.train_seq)} valid train sequences, 8 cameras', 'red')
+        else:
+            cprint(f'  with {len(self.test_seq)} valid test sequences, 8 cameras', 'red')
+
 
     def _get_valid_sequence(self, hanco_root, DEBUG):
         '''Compute valid sequence from meta.json
@@ -158,8 +189,8 @@ class HanCo(data.Dataset):
 
         train_list = sorted(list(train_set))
         test_list = sorted(list(test_set))
-        print(f'Train({len(train_list)}): {train_list[:5]}, ...', end=', ')
-        print(f'Test({len(test_list)}):   {test_list[:5]}...')
+        print(f'Train({len(train_list)}): {train_list[:3] + ["..."] + train_list[-3:]}', end=', ')
+        print(f'Test({len(test_list)}): {test_list[:3] + ["..."] + test_list[-3:]}')
         return train_list, test_list
 
     def __len__(self):
@@ -168,86 +199,93 @@ class HanCo(data.Dataset):
         elif self.phase == 'test':
             return len(self.test_seq) * 8
 
-    def __getitem__(self, index):
+    def __getitem__(self, idx):
         if self.phase == 'train':
-            aug_folder = index / self.len_train_seq_cam
-            seq_id = self.train_seq[index % self.len_train_seq_cam] # No. ? in train_seq
-            cam_id = index % 8
-        elif self.phase == 'test':
-            seq_id = index / 8
-            cam_id = index % 8
-
-@DATA_REGISTRY.register()
-class FreiHAND(data.Dataset):
-    def __init__(self, cfg, phase='train', writer=None):
-        """Init a FreiHAND Dataset
-
-        Args:
-            cfg : config file
-            phase (str, optional): train or eval. Defaults to 'train'.
-            writer (optional): log file. Defaults to None.
-        """
-        super(FreiHAND, self).__init__()
-        self.cfg = cfg
-        self.phase = phase
-        self.db_data_anno = tuple(load_db_annotation(self.cfg.DATA.FREIHAND.ROOT, set_name=self.phase))
-        self.color_aug = Augmentation() if cfg.DATA.COLOR_AUG and 'train' in self.phase else None
-        self.one_version_len = len(self.db_data_anno)
-        if 'train' in self.phase:
-            self.db_data_anno *= 4
-        if writer is not None:
-            writer.print_str('Loaded FreiHand {} {} samples'.format(self.phase, str(len(self.db_data_anno))))
-        cprint('Loaded FreiHand {} {} samples'.format(self.phase, str(len(self.db_data_anno))), 'red')
-
-    def __getitem__(self, idx):  # True
-        if 'train' in self.phase:
+            aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
             if self.cfg.DATA.CONTRASTIVE:
-                return self.get_contrastive_sample(idx)
+                raise NotImplemented('contrastive data audmentation not implemented yet')
             else:
-                return self.get_training_sample(idx)
-        elif 'eval' in self.phase or 'test' in self.phase:
-            return self.get_eval_sample(idx)
-        else:
-            raise Exception('phase error')
+                return self.get_training_sample(aug_id, seq_id, cam_id)
+        elif self.phase == 'test':
+            seq_id, cam_id = self._inverse_compute_index(idx)
+            return self.get_testing_sample(seq_id, cam_id)
 
-    def get_contrastive_sample(self, idx):
-        """Get contrastive FreiHAND samples for consistency learning
-        """
-        # read
-        img = read_img_abs(idx, self.cfg.DATA.FREIHAND.ROOT, 'training')
-        vert = read_mesh(idx % self.one_version_len, self.cfg.DATA.FREIHAND.ROOT).x.numpy()
-        mask = read_mask_woclip(idx % self.one_version_len, self.cfg.DATA.FREIHAND.ROOT, 'training')
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = list(contours)
-        contours.sort(key=cnt_area, reverse=True)
-        bbox = cv2.boundingRect(contours[0])
-        center = [bbox[0]+bbox[2]*0.5, bbox[1]+bbox[3]*0.5]
-        w, h = bbox[2], bbox[3]
-        bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]
-        K, mano, joint_cam = self.db_data_anno[idx]
-        K, joint_cam, mano = np.array(K), np.array(joint_cam), np.array(mano)
-        # print(f'K:\n{K}')
-        joint_img = projectPoints(joint_cam, K)
-        princpt = K[0:2, 2].astype(np.float32)
-        focal = np.array( [K[0, 0], K[1, 1]], dtype=np.float32)
-        # multiple aug
-        roi_list = []
-        calib_list = []
-        mask_list = []
-        vert_list = []
-        joint_cam_list = []
-        joint_img_list = []
-        aug_param_list = []
-        bb2img_trans_list = []
-        for _ in range(2):
-            # augmentation
-            roi, img2bb_trans, bb2img_trans, aug_param, do_flip, scale, roi_mask = augmentation(img.copy(), bbox, self.phase,
-                                                                                            exclude_flip=not self.cfg.DATA.FREIHAND.FLIP,
+    def _compute_index(self, aug_id, seq_id, cam_id):
+        ''' aug_id, seq_id, cam_id -> index
+        '''
+        return aug_id * self.len_train_seq_cam + \
+               self.train_seq.index(seq_id) * 8 + cam_id
+
+    def _inverse_compute_index(self, idx):
+        ''' index -> (aug_id), seq_id, cam_id
+        '''
+        if self.phase == 'train':
+            aug_id = int(idx / self.len_train_seq_cam)
+            seq_id = self.train_seq[int(idx % self.len_train_seq_cam / 8)] # No. ? in train_seq
+            cam_id = idx % 8
+            return aug_id, seq_id, cam_id
+        if self.phase == 'test':
+            seq_id = int(idx / 8)
+            cam_id = idx % 8
+            return seq_id, cam_id
+
+    def get_training_sample(self, aug_id, seq_id, cam_id):
+        ''' Get HanCo sequence, see details at top - FORMAT
+            with frame counts: self.frame_counts
+        '''
+        # _ = f'{seq_id:04d}', f'cam{cam_id}', f'{frame_id:08d}'
+
+        # compute frame counts in seq: seq_id
+        max_seq_length = len(os.listdir(
+            os.path.join(self.hanco_root, 'rgb', f'{seq_id:04d}', f'cam{cam_id}')
+        ))
+
+        # get sequence: [start, ..., start+self.frame_counts -1][ ... ]
+        start = np.random.randint(0, max_seq_length -self.frame_counts +1)
+        # 20, 10 -> start(0, 11) -> [0, ..., 9], [10, ..., 19]
+
+        # read images, masks
+        images, masks = [], []
+        for frame_id in range(start, start + self.frame_counts):
+            img = read_img(self.hanco_root, self.image_aug[aug_id], seq_id, cam_id, frame_id)
+            mask = read_mask(self.hanco_root, seq_id, cam_id, frame_id)
+            images += [img]
+            masks += [mask]
+
+        images, masks = np.stack(images), np.stack(masks)
+
+        # read annots
+        # vert = read_mesh()
+        Annots = read_annot(self.hanco_root, seq_id, cam_id)
+        Verts = Annots['verts'][start:start + self.frame_counts]
+        Joints = Annots['joint'][start:start + self.frame_counts]
+        Roots = Annots['global_t'][start:start + self.frame_counts]
+        Intrinsics = Annots['intrinsic'][start:start + self.frame_counts]
+
+        # Complete list of ndarray {roi, mask, joint_cam, joint_img, verts, root, calib}
+        roi_list, mask_list, joint_cam_list, joint_img_list, verts_list, root_list, calib_list = [], [], [], [], [], [], []
+
+        for i in range(self.frame_counts):
+            # augment for data[i]: image, mask, annots
+            img = images[i]
+            mask = masks[i]
+            vert = Verts[i] + Roots[i]
+
+            bbox = self._get_init_bbox_from_mask(mask)
+            K, joint_cam = Intrinsics[i], Joints[i] + Roots[i] # (3, 3), (21, 3)
+
+            # Copied from FreiHAND.get_training_sample()
+            joint_img = projectPoints(joint_cam, K) # (21, 2)
+            princpt = K[0:2, 2].astype(np.float32)
+            focal = np.array( [K[0, 0], K[1, 1]], dtype=np.float32)
+
+            roi, img2bb_trans, bb2img_trans, aug_param, do_flip, scale, mask = augmentation(img, bbox, self.phase,
+                                                                                            exclude_flip=not self.cfg.DATA.HANCO.FLIP,
                                                                                             input_img_shape=(self.cfg.DATA.SIZE, self.cfg.DATA.SIZE),
-                                                                                            mask=mask.copy(),
-                                                                                            base_scale=self.cfg.DATA.FREIHAND.BASE_SCALE,
-                                                                                            scale_factor=self.cfg.DATA.FREIHAND.SCALE,
-                                                                                            rot_factor=self.cfg.DATA.FREIHAND.ROT,
+                                                                                            mask=mask,
+                                                                                            base_scale=self.cfg.DATA.HANCO.BASE_SCALE,
+                                                                                            scale_factor=self.cfg.DATA.HANCO.SCALE,
+                                                                                            rot_factor=self.cfg.DATA.HANCO.ROT,
                                                                                             shift_wh=[bbox[2], bbox[3]],
                                                                                             gaussian_std=self.cfg.DATA.STD)
             if self.color_aug is not None:
@@ -257,256 +295,230 @@ class FreiHAND(data.Dataset):
             # cv2.imshow('test', img)
             # cv2.waitKey(0)
             roi = torch.from_numpy(roi).float()
-            roi_mask = torch.from_numpy(roi_mask).float()
+            mask = torch.from_numpy(mask).float()
             bb2img_trans = torch.from_numpy(bb2img_trans).float()
-            aug_param = torch.from_numpy(aug_param).float()
 
             # joints
-            joint_img_, princpt_ = augmentation_2d(img, joint_img, princpt, img2bb_trans, do_flip)
-            joint_img_ = torch.from_numpy(joint_img_[:, :2]).float() / self.cfg.DATA.SIZE
+            joint_img, princpt = augmentation_2d(img, joint_img, princpt, img2bb_trans, do_flip)
+            joint_img = torch.from_numpy(joint_img[:, :2]).float() / self.cfg.DATA.SIZE
 
             # 3D rot
-            rot = aug_param[0].item()
+            rot = aug_param[0]
             rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
                                     [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
                                     [0, 0, 1]], dtype=np.float32)
-            joint_cam_ = torch.from_numpy(np.dot(rot_aug_mat, joint_cam.T).T).float()
-            vert_ = torch.from_numpy(np.dot(rot_aug_mat, vert.T).T).float()
+            ''' 拇指朝 z+ 方向旋轉 (-rot) 度
+            | cos(-rot) | -sin(-rot) | 0 |
+            | sin(-rot) |  cos(-rot) | 0 |
+            |     0     |    0       | 1 |
+
+            因為 內部的 rot 是指旋轉 bbox! 旋轉後的 bbox 再經由 affine trans 轉到輸出圖片座標時，事實上做的旋轉是倒過來的
+            '''
+            joint_cam = np.dot(rot_aug_mat, joint_cam.T).T
+            vert = np.dot(rot_aug_mat, vert.T).T
 
             # K
-            focal_ = focal * roi.size(1) / (bbox[2]*aug_param[1])
+            focal = focal * roi.size(1) / (bbox[2]*aug_param[1])
             calib = np.eye(4)
-            calib[0, 0] = focal_[0]
-            calib[1, 1] = focal_[1]
-            calib[:2, 2:3] = princpt_[:, None]
+            calib[0, 0] = focal[0]
+            calib[1, 1] = focal[1]
+            calib[:2, 2:3] = princpt[:, None]
             calib = torch.from_numpy(calib).float()
 
-            roi_list.append(roi)
-            mask_list.append(roi_mask.unsqueeze(0))
-            calib_list.append(calib)
-            vert_list.append(vert_)
-            joint_cam_list.append(joint_cam_)
-            joint_img_list.append(joint_img_)
-            aug_param_list.append(aug_param)
-            bb2img_trans_list.append(bb2img_trans)
+            # postprocess root and joint_cam
+            root = Roots[i]
+            joint_cam -= root
+            vert -= root
+            joint_cam /= self.cfg.DATA.HANCO.SCALE  # edited from 0.2
+            vert /= self.cfg.DATA.HANCO.SCALE  # edited from 0.2
 
-        # print(f'calib:\n{calib_list[0]}')
-        roi = torch.cat(roi_list, 0)
-        mask = torch.cat(mask_list, 0)
-        calib = torch.cat(calib_list, 0)
-        joint_cam = torch.cat(joint_cam_list, -1)
-        vert = torch.cat(vert_list, -1)
-        joint_img = torch.cat(joint_img_list, -1)
-        aug_param = torch.cat(aug_param_list, 0)
-        bb2img_trans = torch.cat(bb2img_trans_list, -1)
+            # root = torch.from_numpy(root).float()
+            # joint_cam = torch.from_numpy(joint_cam).float()
+            # vert = torch.from_numpy(vert).float()
 
-        # postprocess root and joint_cam
-        root = joint_cam[0].clone()
-        joint_cam -= root
-        vert -= root
-        joint_cam /= 0.2
-        vert /= 0.2
+            # add to list
+            roi_list += [roi]
+            mask_list += [mask]
+            joint_cam_list += [joint_cam]
+            joint_img_list += [joint_img]
+            verts_list += [vert]
+            root_list += [root[0]]
+            calib_list += [calib]
 
-        # out
-        res = {'img': roi, 'joint_img': joint_img, 'joint_cam': joint_cam, 'verts': vert, 'mask': mask,
-               'root': root, 'calib': calib, 'aug_param': aug_param, 'bb2img_trans': bb2img_trans,}
+        # Prepare torch.Tensor from ndarray lists
+        roi_tensor = torch.from_numpy(np.stack(roi_list)).float()
+        mask_tensor = torch.from_numpy(np.stack(mask_list)).float()
+        joint_cam_tensor = torch.from_numpy(np.stack(joint_cam_list)).float()
+        joint_img_tensor = torch.from_numpy(np.stack(joint_img_list)).float()
+        verts_tensor = torch.from_numpy(np.stack(verts_list)).float()
+        root_tensor = torch.from_numpy(np.stack(root_list)).float()
+        calib_tensor = torch.from_numpy(np.stack(calib_list)).float()
 
-        return res
+        ret = {
+            'start': start,
 
-    def get_training_sample(self, idx):
-        """Get a FreiHAND sample for training
-        """
-        # read
-        img = read_img_abs(idx, self.cfg.DATA.FREIHAND.ROOT, 'training')
-        vert = read_mesh(idx % self.one_version_len, self.cfg.DATA.FREIHAND.ROOT).x.numpy()
-        mask = read_mask_woclip(idx % self.one_version_len, self.cfg.DATA.FREIHAND.ROOT, 'training')
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = list(contours)
-        contours.sort(key=cnt_area, reverse=True)
-        bbox = cv2.boundingRect(contours[0])
-        center = [bbox[0]+bbox[2]*0.5, bbox[1]+bbox[3]*0.5]
-        w, h = bbox[2], bbox[3]
-        bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]
-        K, mano, joint_cam = self.db_data_anno[idx]
-        K, joint_cam, mano = np.array(K), np.array(joint_cam), np.array(mano)
-        joint_img = projectPoints(joint_cam, K)
-        princpt = K[0:2, 2].astype(np.float32)
-        focal = np.array( [K[0, 0], K[1, 1]], dtype=np.float32)
+            'img': roi_tensor,
+            'mask': mask_tensor,
 
-        # augmentation
-        roi, img2bb_trans, bb2img_trans, aug_param, do_flip, scale, mask = augmentation(img, bbox, self.phase,
-                                                                                        exclude_flip=not self.cfg.DATA.FREIHAND.FLIP,
-                                                                                        input_img_shape=(self.cfg.DATA.SIZE, self.cfg.DATA.SIZE),
-                                                                                        mask=mask,
-                                                                                        base_scale=self.cfg.DATA.FREIHAND.BASE_SCALE,
-                                                                                        scale_factor=self.cfg.DATA.FREIHAND.SCALE,
-                                                                                        rot_factor=self.cfg.DATA.FREIHAND.ROT,
-                                                                                        shift_wh=[bbox[2], bbox[3]],
-                                                                                        gaussian_std=self.cfg.DATA.STD)
-        if self.color_aug is not None:
-            roi = self.color_aug(roi)
-        roi = base_transform(roi, self.cfg.DATA.SIZE, mean=self.cfg.DATA.IMG_MEAN, std=self.cfg.DATA.IMG_STD)
-        # img = inv_based_tranmsform(roi)
-        # cv2.imshow('test', img)
-        # cv2.waitKey(0)
-        roi = torch.from_numpy(roi).float()
-        mask = torch.from_numpy(mask).float()
-        bb2img_trans = torch.from_numpy(bb2img_trans).float()
+            'joint_cam': joint_cam_tensor,
+            'joint_img': joint_img_tensor,
+            'verts': verts_tensor,
 
-        # joints
-        joint_img, princpt = augmentation_2d(img, joint_img, princpt, img2bb_trans, do_flip)
-        joint_img = torch.from_numpy(joint_img[:, :2]).float() / self.cfg.DATA.SIZE
+            'root': root_tensor,
 
-        # 3D rot
-        rot = aug_param[0]
-        rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
-                                [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
-                                [0, 0, 1]], dtype=np.float32)
-        ''' 拇指朝 z+ 方向旋轉 (-rot) 度
-        | cos(-rot) | -sin(-rot) | 0 |
-        | sin(-rot) |  cos(-rot) | 0 |
-        |     0     |    0       | 1 |
+            'calib': calib_tensor,
+        }
 
-        因為 內部的 rot 是指旋轉 bbox! 旋轉後的 bbox 再經由 affine trans 轉到輸出圖片座標時，事實上做的旋轉是倒過來的
+        return ret
+
+    def _get_init_bbox_from_mask(self, mask):
+        ''' only called by get_[training, contrastive, testing]_sample
         '''
-        joint_cam = np.dot(rot_aug_mat, joint_cam.T).T
-        vert = np.dot(rot_aug_mat, vert.T).T
+        if self.phase in ['train']:
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = list(contours)
+            contours.sort(key=cnt_area, reverse=True)
+            bbox = cv2.boundingRect(contours[0])
+            center = [bbox[0]+bbox[2]*0.5, bbox[1]+bbox[3]*0.5]
+            w, h = bbox[2], bbox[3]
+            bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]
+            return bbox
+        else:
+            raise NotImplemented(f'get bbox from mask, not implemented in phase {self.phase}')
 
-        # K
-        focal = focal * roi.size(1) / (bbox[2]*aug_param[1])
-        calib = np.eye(4)
-        calib[0, 0] = focal[0]
-        calib[1, 1] = focal[1]
-        calib[:2, 2:3] = princpt[:, None]
-        calib = torch.from_numpy(calib).float()
 
-        # postprocess root and joint_cam
-        root = joint_cam[0].copy()
-        joint_cam -= root
-        vert -= root
-        joint_cam /= 0.2
-        vert /= 0.2
-        root = torch.from_numpy(root).float()
-        joint_cam = torch.from_numpy(joint_cam).float()
-        vert = torch.from_numpy(vert).float()
+    def __exp_stacked_images(self):
+        ''' check if images, masks are read successfully
+            in TRAIN phase
+        '''
+        aug_seq_cam_ids = 0, 2, 3
+        data = self.__getitem__(self._compute_index(*aug_seq_cam_ids))
+        images = data['image']
+        masks = data['mask']
 
-        # out
-        res = {'img': roi, 'joint_img': joint_img, 'joint_cam': joint_cam, 'verts': vert, 'mask': mask, 'root': root, 'calib': calib}
+        print(f'aug: {self.image_aug[0]}, seq: 2, cam: 3')
+        print(f'start at: {data["start"]}')
 
-        return res
+        import matplotlib.pyplot as plt
+        ax = plt.subplot(1, 2, 1)
+        ax.imshow(images[0])
+        ax.set_title('rgb')
+        ax.axis('off')
 
-    def get_eval_sample(self, idx):
-        """Get FreiHAND sample for evaluation
-        """
-        # read
-        img = read_img(idx, self.cfg.DATA.FREIHAND.ROOT, 'evaluation', 'gs')
-        K, scale = self.db_data_anno[idx]
-        K = np.array(K)
-        princpt = K[0:2, 2].astype(np.float32)
-        focal = np.array( [K[0, 0], K[1, 1]], dtype=np.float32)
-        bbox = [img.shape[1]//2-50, img.shape[0]//2-50, 100, 100]  # img: (224, 224), bbox=[62, 62, 100, 100]
-        center = [bbox[0]+bbox[2]*0.5, bbox[1]+bbox[3]*0.5]
-        w, h = bbox[2], bbox[3]
-        bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]  # square(left, top, w, h)
+        ax = plt.subplot(1, 2, 2)
+        ax.imshow(masks[0])
+        ax.set_title('mask')
+        ax.axis('off')
 
-        # aug
-        roi, img2bb_trans, bb2img_trans, aug_param, do_flip, scale, _ = augmentation(img, bbox, self.phase,
-                                                                                        exclude_flip=not self.cfg.DATA.FREIHAND.FLIP,
-                                                                                        input_img_shape=(self.cfg.DATA.SIZE, self.cfg.DATA.SIZE),
-                                                                                        mask=None,
-                                                                                        base_scale=self.cfg.DATA.FREIHAND.BASE_SCALE,
-                                                                                        scale_factor=self.cfg.DATA.FREIHAND.SCALE,
-                                                                                        rot_factor=self.cfg.DATA.FREIHAND.ROT,
-                                                                                        shift_wh=[bbox[2], bbox[3]],
-                                                                                        gaussian_std=self.cfg.DATA.STD)
-        # aug_param: [旋轉徑度, bbox 放大倍率(框到更多手外圍的圖), 平移 x 佔畫面比例, 平移 y 佔畫面比例]
-        roi = base_transform(roi, self.cfg.DATA.SIZE, mean=self.cfg.DATA.IMG_MEAN, std=self.cfg.DATA.IMG_STD)
-        roi = torch.from_numpy(roi).float()
+        plt.show()
 
-        # s     : 放大倍率 = roi.size(1) / (bbox[2]*aug_param[1])
-        # Um, Vm: 平移距離 = roi.size(1) * aug_param[2], ...[3]
-        #                                平移 x 佔整張圖的比例
-        # Evaluation 時，不會有 shift，只會有 bbox 的移動
+    def __exp_read_mesh(self):
+        ''' check get vert function
+            check PASSED
+        '''
+        seq_id = 2
+        cam_id = 1
+        frame_id = 5
 
-        # Joint, augmentation_2d, just like get_training_sample() do
-        princpt = trans_point2d(princpt, img2bb_trans)
+        _ = f'{seq_id:04d}', f'cam{cam_id}', f'{frame_id:08d}'
+        ply_path = os.path.join(self.hanco_root, 'mesh', f'{seq_id:04d}', f'cam{cam_id}', f'{frame_id:08d}.ply')
+        seq_path = os.path.join(self.hanco_root, 'numpy_seq', f'{seq_id:04d}', f'cam{cam_id}.npz')
 
-        # K
-        focal = focal * roi.size(1) / (bbox[2]*aug_param[1])  # 放大倍率為：result(roi) / origin(bbox*scale, 擴大 bbox 擷取框框的部份)
-        calib = np.eye(4)
-        calib[0, 0] = focal[0]
-        calib[1, 1] = focal[1]
-        calib[:2, 2:3] = princpt[:, None]
-        # print(f'K:\n{K}')
-        # print(f'calib:\n{calib}')
-        calib = torch.from_numpy(calib).float()
+        from utils.read import read_mesh as read_mesh_
+        vert_ply = read_mesh_(ply_path).x.numpy()
+        np_file = np.load(seq_path)
+        vert_seq = np_file['verts'][frame_id]
 
-        return {'img': roi, 'calib': calib, 'idx': idx}
+        root = np_file['global_t'][frame_id]
+        vert_ply -= root
+        print('maximum difference between vert_ply & vert_seq: ', (vert_ply - vert_seq).max())
 
-    def __len__(self):
+    def __exp_find_min_frame_counts(self):
+        ''' min frame counts at seq=7, frames=20
+        '''
+        # _ = f'{seq_id:04d}', f'cam{cam_id}', f'{frame_id:08d}'
+        min_frame_counts = 1000
+        min_index = 0
+        for seq_id in self.train_seq + self.test_seq:
+            path = os.path.join(self.hanco_root, 'mesh', f'{seq_id:04d}', 'cam0')
+            frame_counts = len(os.listdir(path))
+            if min_frame_counts > frame_counts:
+                min_frame_counts = frame_counts
+                min_index = seq_id
 
-        return len(self.db_data_anno)
+        print(f'min frames: {min_frame_counts}, at index: {min_index}')
+
+    def get_testing_sample(self, seq_id, cam_id):
+        raise NotImplemented('test sample not implemented yet')
 
     def visualization(self, res, idx):
-        """Visualization of correctness
+        """ Visualization of correctness
         """
         import matplotlib.pyplot as plt
         from mobrecon.tools.vis import perspective
-        num_sample = (1, 2)[self.cfg.DATA.CONTRASTIVE]
-        for i in range(num_sample):
-            fig = plt.figure(figsize=(8, 2))
-            img = inv_base_tranmsform(res['img'].numpy()[i*3:(i+1)*3])
+
+        Cols = min(8, self.frame_counts)
+        fig = plt.figure(figsize=(18, 8))
+        for i in range(Cols):
+            img = inv_base_tranmsform(res['img'][i].numpy())
             # joint_img
             if 'joint_img' in res:
-                ax = plt.subplot(1, 4, 1)
-                vis_joint_img = vc.render_bones_from_uv(np.flip(res['joint_img'].numpy()[:, i*2:(i+1)*2]*self.cfg.DATA.SIZE, axis=-1).copy(),
+                ax = plt.subplot(4, Cols, Cols*0 + i+1)
+                vis_joint_img = vc.render_bones_from_uv(np.flip(res['joint_img'][i].numpy()*self.cfg.DATA.SIZE, axis=-1),
                                                         img.copy(), MPIIHandJoints, thickness=2)
                 ax.imshow(vis_joint_img)
                 ax.set_title('kps2d')
                 ax.axis('off')
             # aligned joint_cam
             if 'joint_cam' in res:
-                ax = plt.subplot(1, 4, 2)
-                xyz = res['joint_cam'].numpy()[:, i*3:(i+1)*3].copy()
-                root = res['root'].numpy()[i*3:(i+1)*3].copy()
+                ax = plt.subplot(4, Cols, Cols*1 + i+1)
+                xyz = res['joint_cam'][i].numpy()
+                root = res['root'][i].numpy()
                 xyz = xyz * 0.2 + root
-                proj3d = perspective(torch.from_numpy(xyz.copy()).permute(1, 0).unsqueeze(0), res['calib'][i*4:(i+1)*4].unsqueeze(0))[0].numpy().T
-                vis_joint_img = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1).copy(),
+                proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), res['calib'][i].unsqueeze(0))[0].numpy().T
+                vis_joint_img = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
                                                         img.copy(), MPIIHandJoints, thickness=2)
                 ax.imshow(vis_joint_img)
                 ax.set_title('kps3d2d')
                 ax.axis('off')
             # aligned verts
             if 'verts' in res:
-                ax = plt.subplot(1, 4, 3)
-                vert = res['verts'].numpy()[:, i*3:(i+1)*3].copy()
+                ax = plt.subplot(4, Cols, Cols*2 + i+1)
+                vert = res['verts'][i].numpy()
                 vert = vert * 0.2 + root
-                proj_vert = perspective(torch.from_numpy(vert.copy()).permute(1, 0).unsqueeze(0), res['calib'][i*4:(i+1)*4].unsqueeze(0))[0].numpy().T
+                proj_vert = perspective(torch.from_numpy(vert).permute(1, 0).unsqueeze(0), res['calib'][i].unsqueeze(0))[0].numpy().T
                 ax.imshow(img)
                 plt.plot(proj_vert[:, 0], proj_vert[:, 1], 'o', color='red', markersize=1)
                 ax.set_title('verts')
                 ax.axis('off')
             # mask
             if 'mask' in res:
-                ax = plt.subplot(1, 4, 4)
-                if res['mask'].ndim == 3:
-                    mask = res['mask'].numpy()[i] * 255
-                else:
-                    mask = res['mask'].numpy() * 255
+                ax = plt.subplot(4, Cols, Cols*3 + i+1)
+                mask = res['mask'][i].numpy() * 255
                 mask_ = np.concatenate([mask[:, :, None]] + [np.zeros_like(mask[:, :, None])] * 2, 2).astype(np.uint8)
                 img_mask = cv2.addWeighted(img, 1, mask_, 0.5, 1)
                 ax.imshow(img_mask)
                 ax.set_title('mask')
                 ax.axis('off')
-            plt.show()
-        if self.cfg.DATA.CONTRASTIVE:
-            aug_param = data['aug_param'].unsqueeze(0)
-            vert = data['verts'].unsqueeze(0)
-            joint_img = data['joint_img'].unsqueeze(0)
-            uv_trans = data['bb2img_trans'].unsqueeze(0)
-            loss3d = contrastive_loss_3d(vert, aug_param)
-            loss2d = contrastive_loss_2d(joint_img, uv_trans, data['img'].size(2))
-            print(idx, loss3d, loss2d)
+
+        if self.phase == 'train':
+            aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
+            title = f'HanCo  |  folder: {self.image_aug[aug_id]}  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
+        elif self.phase == 'test':
+            seq_id, cam_id = self._inverse_compute_index(idx)
+            title = f'HanCo  |  folder: rgb  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
+
+        fig.suptitle(title)
+        plt.show()
+
+        # if self.cfg.DATA.CONTRASTIVE:
+        #     aug_param = data['aug_param'].unsqueeze(0)
+        #     vert = data['verts'].unsqueeze(0)
+        #     joint_img = data['joint_img'].unsqueeze(0)
+        #     uv_trans = data['bb2img_trans'].unsqueeze(0)
+        #     loss3d = contrastive_loss_3d(vert, aug_param)
+        #     loss2d = contrastive_loss_2d(joint_img, uv_trans, data['img'].size(2))
+        #     print(idx, loss3d, loss2d)
 
 
 if __name__ == '__main__':
@@ -515,11 +527,22 @@ if __name__ == '__main__':
     from mobrecon.main import setup
     from options.cfg_options import CFGOptions
 
-    args = CFGOptions().parse()
-    args.config_file = 'mobrecon/configs/mobrecon_rs.yml'
-    cfg = setup(args)
+    # args = CFGOptions().parse()
+    # args.config_file = 'mobrecon/configs/mobrecon_rs.yml'
+    # cfg = setup(args)
+    from mobrecon.configs.config import get_cfg
+    cfg = get_cfg()
+    cfg.DATA.COLOR_AUG = False
+    cfg.DATA.HANCO.ROT = 0
 
-    dataset = HanCo(cfg, 'train')
+    dataset = HanCo(cfg, 8, 'train')
+    index = dataset._compute_index(0, 2, 3)
+
+    print(f'Show dataset[{index}]')
+    data = dataset[index] # get 'rgb', seq:2, cam:3
+
+    dataset.visualization(data, index)
+
     # for i in range(0, len(dataset), len(dataset)//10):
     #     print(i)
     #     data = dataset.__getitem__(i)
