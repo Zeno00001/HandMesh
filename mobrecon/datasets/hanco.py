@@ -105,7 +105,8 @@ class HanCo(data.Dataset):
 
         Args:
             cfg : config file
-            frame_counts: (int, Required): transformer got how many frames at a time. Default to 8.
+            frame_counts: (int, optional): transformer got how many frames at a time. Default to 8.
+                not required in 'test' phase
             phase (str, optional): train or eval. Defaults to 'train'.
         '''
         super(HanCo, self).__init__()
@@ -225,7 +226,7 @@ class HanCo(data.Dataset):
             cam_id = idx % 8
             return aug_id, seq_id, cam_id
         if self.phase == 'test':
-            seq_id = int(idx / 8)
+            seq_id = self.test_seq[int(idx / 8)] # No. ? in train_seq
             cam_id = idx % 8
             return seq_id, cam_id
 
@@ -255,11 +256,10 @@ class HanCo(data.Dataset):
         images, masks = np.stack(images), np.stack(masks)
 
         # read annots
-        # vert = read_mesh()
         Annots = read_annot(self.hanco_root, seq_id, cam_id)
-        Verts = Annots['verts'][start:start + self.frame_counts]
-        Joints = Annots['joint'][start:start + self.frame_counts]
         Roots = Annots['global_t'][start:start + self.frame_counts]
+        Verts = Annots['verts'][start:start + self.frame_counts] + Roots
+        Joints = Annots['joint'][start:start + self.frame_counts] + Roots
         Intrinsics = Annots['intrinsic'][start:start + self.frame_counts]
 
         # Complete list of ndarray {roi, mask, joint_cam, joint_img, verts, root, calib}
@@ -269,10 +269,10 @@ class HanCo(data.Dataset):
             # augment for data[i]: image, mask, annots
             img = images[i]
             mask = masks[i]
-            vert = Verts[i] + Roots[i]
+            vert = Verts[i]
 
-            bbox = self._get_init_bbox_from_mask(mask)
-            K, joint_cam = Intrinsics[i], Joints[i] + Roots[i] # (3, 3), (21, 3)
+            bbox = self._get_init_bbox_from_mask(mask=mask)
+            K, joint_cam = Intrinsics[i], Joints[i] # (3, 3), (21, 3)
 
             # Copied from FreiHAND.get_training_sample()
             joint_img = projectPoints(joint_cam, K) # (21, 2)
@@ -291,19 +291,14 @@ class HanCo(data.Dataset):
             if self.color_aug is not None:
                 roi = self.color_aug(roi)
             roi = base_transform(roi, self.cfg.DATA.SIZE, mean=self.cfg.DATA.IMG_MEAN, std=self.cfg.DATA.IMG_STD)
-            # img = inv_based_tranmsform(roi)
-            # cv2.imshow('test', img)
-            # cv2.waitKey(0)
-            roi = torch.from_numpy(roi).float()
-            mask = torch.from_numpy(mask).float()
-            bb2img_trans = torch.from_numpy(bb2img_trans).float()
 
             # joints
             joint_img, princpt = augmentation_2d(img, joint_img, princpt, img2bb_trans, do_flip)
-            joint_img = torch.from_numpy(joint_img[:, :2]).float() / self.cfg.DATA.SIZE
+            joint_img = joint_img[:, :2] / self.cfg.DATA.SIZE
 
             # 3D rot
             rot = aug_param[0]
+            assert rot == 0, 'should not rotate in hanco dataset'
             rot_aug_mat = np.array([[np.cos(np.deg2rad(-rot)), -np.sin(np.deg2rad(-rot)), 0],
                                     [np.sin(np.deg2rad(-rot)), np.cos(np.deg2rad(-rot)), 0],
                                     [0, 0, 1]], dtype=np.float32)
@@ -318,12 +313,13 @@ class HanCo(data.Dataset):
             vert = np.dot(rot_aug_mat, vert.T).T
 
             # K
-            focal = focal * roi.size(1) / (bbox[2]*aug_param[1])
-            calib = np.eye(4)
-            calib[0, 0] = focal[0]
-            calib[1, 1] = focal[1]
-            calib[:2, 2:3] = princpt[:, None]
-            calib = torch.from_numpy(calib).float()
+            focal = focal * self.cfg.DATA.SIZE / (bbox[2]*aug_param[1])
+            calib = np.array([
+                [ focal[0],    0    , princpt[0], 0],
+                [    0    , focal[1], princpt[1], 0],
+                [    0    ,    0    ,     1     , 0],
+                [    0    ,    0    ,     0     , 1]
+            ], dtype=np.float64)
 
             # postprocess root and joint_cam
             root = Roots[i]
@@ -331,10 +327,6 @@ class HanCo(data.Dataset):
             vert -= root
             joint_cam /= self.cfg.DATA.HANCO.SCALE  # edited from 0.2
             vert /= self.cfg.DATA.HANCO.SCALE  # edited from 0.2
-
-            # root = torch.from_numpy(root).float()
-            # joint_cam = torch.from_numpy(joint_cam).float()
-            # vert = torch.from_numpy(vert).float()
 
             # add to list
             roi_list += [roi]
@@ -371,20 +363,199 @@ class HanCo(data.Dataset):
 
         return ret
 
-    def _get_init_bbox_from_mask(self, mask):
+    def _get_init_bbox_from_mask(self, mask=None, img=None):
         ''' only called by get_[training, contrastive, testing]_sample
         '''
         if self.phase in ['train']:
+            assert mask is not None, 'phase: train, {mask} should not be None ' + f'got: {mask}'
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contours = list(contours)
             contours.sort(key=cnt_area, reverse=True)
             bbox = cv2.boundingRect(contours[0])
-            center = [bbox[0]+bbox[2]*0.5, bbox[1]+bbox[3]*0.5]
-            w, h = bbox[2], bbox[3]
-            bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]
-            return bbox
         else:
-            raise NotImplemented(f'get bbox from mask, not implemented in phase {self.phase}')
+            assert img is not None, 'phase: train, {img} should not be None ' + f'got: {img}'
+            bbox = [img.shape[1]//2-50, img.shape[0]//2-50, 100, 100]  # img: (224, 224), bbox=[62, 62, 100, 100]
+
+        center = [bbox[0]+bbox[2]*0.5, bbox[1]+bbox[3]*0.5]
+        w, h = bbox[2], bbox[3]
+        bbox = [center[0]-0.5 * max(w, h), center[1]-0.5 * max(w, h), max(w, h), max(w, h)]  # square(left, top, w, h)
+        return bbox
+
+    def get_testing_sample(self, seq_id, cam_id):
+        ''' Get HanCo sequence, see details at top - FORMAT
+            (X) with frame counts: self.frame_counts
+            with ALL frames
+        '''
+        # _ = f'{seq_id:04d}', f'cam{cam_id}', f'{frame_id:08d}'
+
+        # compute frame counts in seq: seq_id
+        max_seq_length = len(os.listdir(
+            os.path.join(self.hanco_root, 'rgb', f'{seq_id:04d}', f'cam{cam_id}')
+        ))
+
+        # read images, masks
+        images, masks = [], []
+        for frame_id in range(max_seq_length):
+            img = read_img(self.hanco_root, 'rgb', seq_id, cam_id, frame_id)
+            mask = read_mask(self.hanco_root, seq_id, cam_id, frame_id)
+            images += [img]
+            masks += [mask]
+
+        images, masks = np.stack(images), np.stack(masks)
+
+        # read annots
+        Annots = read_annot(self.hanco_root, seq_id, cam_id)
+        Roots = Annots['global_t']
+        Verts = Annots['verts'] + Roots
+        Joints = Annots['joint'] + Roots
+        Intrinsics = Annots['intrinsic']
+
+        # Complete list of ndarray {roi, mask, joint_cam, joint_img, verts, root, calib}
+        roi_list, mask_list, joint_cam_list, joint_img_list, verts_list, root_list, calib_list = [], [], [], [], [], [], []
+
+        for i in range(max_seq_length):
+            img = images[i]
+            K = Intrinsics[i]
+            mask = masks[i]  # Ground-Truth
+            vert = Verts[i]  # Ground-Truth
+            joint_cam = Joints[i]  # Ground-Truth
+
+            bbox = self._get_init_bbox_from_mask(img=images[i])
+
+            joint_img = projectPoints(joint_cam, K) # (21, 2), Ground-Truth
+
+            princpt = K[0:2, 2].astype(np.float32)
+            focal = np.array( [K[0, 0], K[1, 1]], dtype=np.float32)
+
+            # aug, also crop {roi, mask} to bbox
+            roi, img2bb_trans, bb2img_trans, aug_param, do_flip, scale, mask = augmentation(img, bbox, self.phase,
+                                                                                            exclude_flip=not self.cfg.DATA.FREIHAND.FLIP,
+                                                                                            input_img_shape=(self.cfg.DATA.SIZE, self.cfg.DATA.SIZE),
+                                                                                            mask=mask,
+                                                                                            base_scale=self.cfg.DATA.FREIHAND.BASE_SCALE,
+                                                                                            scale_factor=self.cfg.DATA.FREIHAND.SCALE,
+                                                                                            rot_factor=self.cfg.DATA.FREIHAND.ROT,
+                                                                                            shift_wh=[bbox[2], bbox[3]],
+                                                                                            gaussian_std=self.cfg.DATA.STD)
+            # no color aug
+            roi = base_transform(roi, self.cfg.DATA.SIZE, mean=self.cfg.DATA.IMG_MEAN, std=self.cfg.DATA.IMG_STD)
+
+            # update after BBOXING, just like get_training_sample() do
+            joint_img, princpt = augmentation_2d(img, joint_img, princpt, img2bb_trans, do_flip)
+            joint_img = joint_img[:, :2] / self.cfg.DATA.SIZE
+
+            # No 3D rot
+
+            # K
+            focal = focal * self.cfg.DATA.SIZE / (bbox[2]*aug_param[1])  # 放大倍率為：result(roi) / origin(bbox*scale, 擴大 bbox 擷取框框的部份)
+            calib = np.array([
+                [ focal[0],    0    , princpt[0], 0],
+                [    0    , focal[1], princpt[1], 0],
+                [    0    ,    0    ,     1     , 0],
+                [    0    ,    0    ,     0     , 1]
+            ], dtype=np.float64)
+
+            # postprocess root and joint_cam
+            root = Roots[i]
+            joint_cam -= root
+            vert -= root
+            joint_cam /= self.cfg.DATA.HANCO.SCALE
+            vert /= self.cfg.DATA.HANCO.SCALE
+
+            # add to list
+            roi_list += [roi]
+            mask_list += [mask]
+            joint_cam_list += [joint_cam]
+            joint_img_list += [joint_img]
+            verts_list += [vert]
+            root_list += [root[0]]
+            calib_list += [calib]
+
+        # Prepare torch.Tensor from ndarray lists
+        roi_tensor  = torch.from_numpy(np.stack(roi_list)).float()
+        mask_tensor = torch.from_numpy(np.stack(mask_list)).float()
+        joint_cam_tensor = torch.from_numpy(np.stack(joint_cam_list)).float()
+        joint_img_tensor = torch.from_numpy(np.stack(joint_img_list)).float()
+        verts_tensor = torch.from_numpy(np.stack(verts_list)).float()
+        root_tensor = torch.from_numpy(np.stack(root_list)).float()
+        calib_tensor = torch.from_numpy(np.stack(calib_list)).float()
+
+        ret = {
+            'start': 0,
+
+            'img': roi_tensor,
+            'mask': mask_tensor,            # GT
+
+            'joint_cam': joint_cam_tensor,  # GT
+            'joint_img': joint_img_tensor,  # GT
+            'verts': verts_tensor,          # GT
+
+            'root': root_tensor,            # GT
+
+            'calib': calib_tensor,
+        }
+
+        return ret
+
+    def visualization(self, res, idx):
+        """ Visualization of correctness
+        """
+        import matplotlib.pyplot as plt
+        from mobrecon.tools.vis import perspective
+
+        Cols = min(8, self.frame_counts)
+        fig = plt.figure(figsize=(18, 8))
+        for i in range(Cols):
+            img = inv_base_tranmsform(res['img'][i].numpy())
+            # joint_img
+            if 'joint_img' in res:
+                ax = plt.subplot(4, Cols, Cols*0 + i+1)
+                vis_joint_img = vc.render_bones_from_uv(np.flip(res['joint_img'][i].numpy()*self.cfg.DATA.SIZE, axis=-1),
+                                                        img.copy(), MPIIHandJoints, thickness=2)
+                ax.imshow(vis_joint_img)
+                ax.set_title('kps2d')
+                ax.axis('off')
+            # aligned joint_cam
+            if 'joint_cam' in res:
+                ax = plt.subplot(4, Cols, Cols*1 + i+1)
+                xyz = res['joint_cam'][i].numpy()
+                root = res['root'][i].numpy()
+                xyz = xyz * 0.2 + root
+                proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), res['calib'][i].unsqueeze(0))[0].numpy().T
+                vis_joint_img = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
+                                                        img.copy(), MPIIHandJoints, thickness=2)
+                ax.imshow(vis_joint_img)
+                ax.set_title('kps3d2d')
+                ax.axis('off')
+            # aligned verts
+            if 'verts' in res:
+                ax = plt.subplot(4, Cols, Cols*2 + i+1)
+                vert = res['verts'][i].numpy()
+                vert = vert * 0.2 + root
+                proj_vert = perspective(torch.from_numpy(vert).permute(1, 0).unsqueeze(0), res['calib'][i].unsqueeze(0))[0].numpy().T
+                ax.imshow(img)
+                plt.plot(proj_vert[:, 0], proj_vert[:, 1], 'o', color='red', markersize=1)
+                ax.set_title('verts')
+                ax.axis('off')
+            # mask
+            if 'mask' in res:
+                ax = plt.subplot(4, Cols, Cols*3 + i+1)
+                mask = res['mask'][i].numpy() * 255
+                mask_ = np.concatenate([mask[:, :, None]] + [np.zeros_like(mask[:, :, None])] * 2, 2).astype(np.uint8)
+                img_mask = cv2.addWeighted(img, 1, mask_, 0.5, 1)
+                ax.imshow(img_mask)
+                ax.set_title('mask')
+                ax.axis('off')
+
+        if self.phase == 'train':
+            aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
+            title = f'HanCo  |  folder: {self.image_aug[aug_id]}  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
+        elif self.phase == 'test':
+            seq_id, cam_id = self._inverse_compute_index(idx)
+            title = f'HanCo  |  folder: rgb  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
+
+        fig.suptitle(title)
+        plt.show()
 
 
     def __exp_stacked_images(self):
@@ -448,78 +619,6 @@ class HanCo(data.Dataset):
 
         print(f'min frames: {min_frame_counts}, at index: {min_index}')
 
-    def get_testing_sample(self, seq_id, cam_id):
-        raise NotImplemented('test sample not implemented yet')
-
-    def visualization(self, res, idx):
-        """ Visualization of correctness
-        """
-        import matplotlib.pyplot as plt
-        from mobrecon.tools.vis import perspective
-
-        Cols = min(8, self.frame_counts)
-        fig = plt.figure(figsize=(18, 8))
-        for i in range(Cols):
-            img = inv_base_tranmsform(res['img'][i].numpy())
-            # joint_img
-            if 'joint_img' in res:
-                ax = plt.subplot(4, Cols, Cols*0 + i+1)
-                vis_joint_img = vc.render_bones_from_uv(np.flip(res['joint_img'][i].numpy()*self.cfg.DATA.SIZE, axis=-1),
-                                                        img.copy(), MPIIHandJoints, thickness=2)
-                ax.imshow(vis_joint_img)
-                ax.set_title('kps2d')
-                ax.axis('off')
-            # aligned joint_cam
-            if 'joint_cam' in res:
-                ax = plt.subplot(4, Cols, Cols*1 + i+1)
-                xyz = res['joint_cam'][i].numpy()
-                root = res['root'][i].numpy()
-                xyz = xyz * 0.2 + root
-                proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), res['calib'][i].unsqueeze(0))[0].numpy().T
-                vis_joint_img = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
-                                                        img.copy(), MPIIHandJoints, thickness=2)
-                ax.imshow(vis_joint_img)
-                ax.set_title('kps3d2d')
-                ax.axis('off')
-            # aligned verts
-            if 'verts' in res:
-                ax = plt.subplot(4, Cols, Cols*2 + i+1)
-                vert = res['verts'][i].numpy()
-                vert = vert * 0.2 + root
-                proj_vert = perspective(torch.from_numpy(vert).permute(1, 0).unsqueeze(0), res['calib'][i].unsqueeze(0))[0].numpy().T
-                ax.imshow(img)
-                plt.plot(proj_vert[:, 0], proj_vert[:, 1], 'o', color='red', markersize=1)
-                ax.set_title('verts')
-                ax.axis('off')
-            # mask
-            if 'mask' in res:
-                ax = plt.subplot(4, Cols, Cols*3 + i+1)
-                mask = res['mask'][i].numpy() * 255
-                mask_ = np.concatenate([mask[:, :, None]] + [np.zeros_like(mask[:, :, None])] * 2, 2).astype(np.uint8)
-                img_mask = cv2.addWeighted(img, 1, mask_, 0.5, 1)
-                ax.imshow(img_mask)
-                ax.set_title('mask')
-                ax.axis('off')
-
-        if self.phase == 'train':
-            aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
-            title = f'HanCo  |  folder: {self.image_aug[aug_id]}  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
-        elif self.phase == 'test':
-            seq_id, cam_id = self._inverse_compute_index(idx)
-            title = f'HanCo  |  folder: rgb  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
-
-        fig.suptitle(title)
-        plt.show()
-
-        # if self.cfg.DATA.CONTRASTIVE:
-        #     aug_param = data['aug_param'].unsqueeze(0)
-        #     vert = data['verts'].unsqueeze(0)
-        #     joint_img = data['joint_img'].unsqueeze(0)
-        #     uv_trans = data['bb2img_trans'].unsqueeze(0)
-        #     loss3d = contrastive_loss_3d(vert, aug_param)
-        #     loss2d = contrastive_loss_2d(joint_img, uv_trans, data['img'].size(2))
-        #     print(idx, loss3d, loss2d)
-
 
 if __name__ == '__main__':
     """Test the dataset
@@ -535,8 +634,10 @@ if __name__ == '__main__':
     cfg.DATA.COLOR_AUG = False
     cfg.DATA.HANCO.ROT = 0
 
-    dataset = HanCo(cfg, 8, 'train')
+    dataset = HanCo(cfg, 8, 'test')
+
     index = dataset._compute_index(0, 2, 3)
+    index = 100
 
     print(f'Show dataset[{index}]')
     data = dataset[index] # get 'rgb', seq:2, cam:3
