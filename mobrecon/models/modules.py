@@ -198,17 +198,21 @@ class Reg2DDecode3D(nn.Module):
                 self.de_layer.append(SpiralDeblock(self.out_channels[-idx], self.out_channels[-idx - 1], self.spiral_indices[-idx - 1], meshconv=meshconv))
         self.head = meshconv(self.out_channels[0], 3, self.spiral_indices[0])
         self.upsample = nn.Parameter(torch.ones([self.num_vert[-1], self.uv_channel])*0.01, requires_grad=True)
+        # 0.01 with shape [49, 21]
+        # verts feature: [49, channels] = upsample @ [21, channels]
 
 
     def index(self, feat, uv):
         uv = uv.unsqueeze(2)  # [B, N, 1, 2]
         samples = torch.nn.functional.grid_sample(feat, uv, align_corners=True)  # [B, C, N, 1]
+        # index features in feat[:,:,i, j]
+        # (i, j) = (uv[:,:,1,0], uv[:,:,1,1])
         return samples[:, :, :, 0]  # [B, C, N]
 
     def forward(self, uv, x):
         uv = torch.clamp((uv - 0.5) * 2, -1, 1)
         x = self.de_layer_conv(x)
-        x = self.index(x, uv).permute(0, 2, 1)
+        x = self.index(x, uv).permute(0, 2, 1)  # [B, 21, channel]
         x = torch.bmm(self.upsample.repeat(x.size(0), 1, 1).to(x.device), x)
         num_features = len(self.de_layer)
         for i, layer in enumerate(self.de_layer):
