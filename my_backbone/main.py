@@ -93,7 +93,8 @@ def main(args):
                 model_path = cfg.MODEL.RESUME
             else:
                 model_path = osp.join(args.checkpoints_dir, cfg.MODEL.RESUME)
-                # model_path = osp.join(args.out_dir, '../densestack', 'checkpoints', cfg.MODEL.RESUME)
+                if args.exp_name == 'test':
+                    model_path = osp.join(args.out_dir, '../densestack_conf', 'checkpoints', cfg.MODEL.RESUME)
             checkpoint = torch.load(model_path, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -141,27 +142,170 @@ def main(args):
         test_loader = None
 
     # model.eval()
-    # data = train_dataset[0]
-    # image = data['img'].view(1, 3, 128, 128).to(device)
-    # ground_truth = data['joint_img']
-    # out = model(image)
-    # predict = out['joint_img'].cpu()[0]
+    # TESTIMAGES = 10
+    # diffs = []
+    # for i in range(TESTIMAGES):
+    #     data = train_dataset[i]
+    #     image = data['img'].view(1, 3, 128, 128).to(device)
+    #     ground_truth = data['joint_img']
+    #     out = model(image)
+    #     predict = out['joint_img'].cpu()[0]
 
-    # print(f'GT: {ground_truth}')
-    # print(f'PD: {predict}')
-    # diff = ((ground_truth - predict)**2).sum().sqrt()  # sqrt. sum. (GT - p)^2
-    # print(f'Diff: {diff}')  # Diff: 0.1784597933292389
+    #     # print(f'GT: {ground_truth}')
+    #     # print(f'PD: {predict}')
+    #     diff = ((ground_truth - predict)**2).sum(axis=1).sqrt()  # sqrt. sum. (GT - p)^2
+    #     print(f'Diff: {diff}')  # Diff: 0.1784597933292389
+    #     diffs += [diff.detach().numpy()]
+    # import numpy as np
+    # diffs = np.stack(diffs)
+    # print(f'max: {diffs.max()}, min: {diffs.min()}, mean: {diffs.mean()}')
 
+    # #? EXP
+    # exp_on(
+    #     model=  model,
+    #     datas=   [train_dataset[i] for i in (5, 10, 15, 20, 25, 30)],
+    #     device= device
+    # )
     # exit()
 
     # run
     runner = Runner(cfg, args, model, train_loader, eval_loader, test_loader, optimizer, writer, device, board, start_epoch=epoch)
     runner.run()
 
+def exp_on(model, datas, device):
+    # train_dataset.dbs[0].visualization(data, 0)
+    model.eval()
+    with torch.no_grad():
+        for data in datas:
+            out = model(data['img'][None].to(device))  # .cpu()
+            # (#, 21, 2), (#, 21, 1)
+            for key in out:
+                out[key] = out[key].cpu()
+            # exp_conf(data, out)
+            exp_heatmap(data, out)
+
+def confidence(**kwargs):
+    # return (#, 21)
+    distance = ((kwargs['joint_img_pred'] - kwargs['joint_img_gt'])**2).sum(axis=2).sqrt()
+    # (#, 21)
+    distance = distance.detach()
+    conf_gt = 2 - 2 * torch.sigmoid(distance * 30)
+    return conf_gt
+
+def exp_conf(data, out):
+    from matplotlib import pyplot as plt
+    gt = confidence(joint_img_gt=data['joint_img'][None], joint_img_pred=out['joint_img'])
+    pred = out['conf']
+    gt = gt[0, :]
+    pred = pred[0, :, 0]
+    print('gt:', gt, 'pred:', pred, sep='\n')
+    plt.plot(gt, label='gt')
+    plt.plot(pred, label='pred')
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.show()
+
+def exp_heatmap(data, out):
+    '''
+    data: {
+        joint_img: [21, 2]
+        img: [3, 128, 128]
+    }
+    out: {
+        joint_img: [1, 21, 2]
+        conf: [1, 21, 1]
+    }
+    edit uv2map() function for prefect heatmap width
+    '''
+    from matplotlib import pyplot as plt
+    import numpy as np
+    from utils.vis import uv2map, inv_base_tranmsform
+    import vctoolkit as vc
+    from my_research.tools.kinematics import MPIIHandJoints
+    for k in data:
+        data[k] = data[k].numpy()
+    for k in out:
+        out[k] = out[k].numpy()
+
+    uv_gt = data['joint_img'] * 128     # gt
+    uv_pd = out['joint_img'][0] * 128   # pred
+    # uv_gt, uv_pd = uv_gt.int(), uv_pd.int()
+
+    img = inv_base_tranmsform(data['img'])
+    img_size = img.shape[:2]
+    c_gt = confidence(joint_img_gt=torch.from_numpy(data['joint_img']),
+                      joint_img_pred=torch.from_numpy(out['joint_img'])).numpy() # [#, 21]
+    c_gt = c_gt[0, :, None, None]       # gt  : [21, 1, 1]
+
+    c_pd = out['conf'][0, :, None]      # pred: [21, 1, 1]
+
+    def sum_and_thrd(heat):
+        # heat: (21, 128, 128)
+        heat = heat.sum(axis=0)
+        heat[heat>1] = 1
+        return heat
+
+    heat_gt = uv2map(uv_gt.astype('int'), img_size)  # (21, 128, 128)
+    heat_pd = uv2map(uv_pd.astype('int'), img_size)  # (21, 128, 128)
+
+    # hand img: 1
+    ax = plt.subplot(2, 4, 1)
+    ax.imshow(img)
+    ax.set_title('img')
+    ax.axis('off')
+
+    # hand joint: 2
+    ax = plt.subplot(2, 4, 2)
+    vis_joint_img = vc.render_bones_from_uv(np.flip(uv_gt, axis=-1).copy(),
+                                            img.copy(), MPIIHandJoints, thickness=2)
+    ax.imshow(vis_joint_img)
+    ax.set_title('joint + img gt')
+    ax.axis('off')
+
+    # hand joint: 6
+    ax = plt.subplot(2, 4, 6)
+    vis_joint_img = vc.render_bones_from_uv(np.flip(uv_pd, axis=-1).copy(),
+                                            img.copy(), MPIIHandJoints, thickness=2)
+    ax.imshow(vis_joint_img)
+    ax.set_title('joint + img pred')
+    ax.axis('off')
+
+    # heat, pos: gt, conf: gt -> : 3
+    ax = plt.subplot(2, 4, 3)
+    heat = heat_gt * c_gt
+    ax.imshow(sum_and_thrd(heat))
+    ax.set_title('heat pos:gt, conf:gt')
+    ax.axis('off')
+
+    # heat, pos: gt, conf: pd -> : 4
+    ax = plt.subplot(2, 4, 4)
+    heat = heat_gt * c_pd
+    ax.imshow(sum_and_thrd(heat))
+    ax.set_title('heat pos:gt, conf:pd')
+    ax.axis('off')
+
+    # heat, pos: pd, conf: gt -> : 7
+    ax = plt.subplot(2, 4, 7)
+    heat = heat_pd * c_gt
+    ax.imshow(sum_and_thrd(heat))
+    ax.set_title('heat pos:pd, conf:gt')
+    ax.axis('off')
+
+    # heat, pos: pd, conf: pd -> : 8
+    ax = plt.subplot(2, 4, 8)
+    heat = heat_pd * c_pd
+    ax.imshow(sum_and_thrd(heat))
+    ax.set_title('heat pos:pd, conf:pd')
+    ax.axis('off')
+
+    plt.show()
+    print()
+
 
 if __name__ == "__main__":
 
     args = CFGOptions().parse()
-    args.exp_name = 'test'  # folder
-    args.config_file = 'my_backbone/configs/densestack.yml'
+    #! COMMENTED while train with scripts/
+    # args.exp_name = 'test'  # folder
+    # args.config_file = 'my_backbone/configs/densestack_conf.yml'
     main(args)

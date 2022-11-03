@@ -174,7 +174,8 @@ class Runner(object):
             tf = time.time()
             forward_time += tf - ts
             losses = self.loss(joint_img_pred=out['joint_img'],
-                               joint_img_gt=data['joint_img'])
+                               joint_img_gt=data['joint_img'],
+                               conf_pred=out['conf'])  # for densestack_conf model
             loss = losses['loss']
             loss.backward()
             self.optimizer.step()
