@@ -100,7 +100,7 @@ from my_research.build import DATA_REGISTRY
 
 @DATA_REGISTRY.register()
 class HanCo(data.Dataset):
-    def __init__(self, cfg, frame_counts=8, phase='train'):
+    def __init__(self, cfg, frame_counts=8, phase='train', writer=None):
         '''Init a FreiHAND Dataset
 
         Args:
@@ -112,7 +112,7 @@ class HanCo(data.Dataset):
         super(HanCo, self).__init__()
         self.cfg = cfg
         self.phase = phase
-        assert phase in ('train', 'test'), f'phase should be "train" or "test", got: {phase}'
+        assert phase in ('train', 'test', 'valid'), f'phase should be "train" or "test" or "valid", got: {phase}'
         self.frame_counts = frame_counts
         assert 1 < frame_counts <= 20, f'frame_counts should be in (2, 21), got: {frame_counts}'
 
@@ -121,15 +121,26 @@ class HanCo(data.Dataset):
         self.train_seq, self.test_seq = self._get_valid_sequence(
             hanco_root=self.hanco_root, DEBUG=False
         )
-        self.image_aug = ['rgb', 'rgb_color_auto', 'rgb_color_sample', 'rgb_homo', 'rgb_merged']
+        # ! split train_seq into {train_seq, valid_seq}
+        np.random.seed(0)
+        self.train_seq, self.valid_seq = self._split_train_valid(self.train_seq, ratio=0.03)  # 583:237592
         self.len_train_seq_cam = len(self.train_seq) * 8  # (sequence X cam) counts of all augment folders
+        self.len_valid_seq_cam = len(self.valid_seq) * 8
+
+        self.image_aug = ['rgb', 'rgb_color_auto', 'rgb_color_sample', 'rgb_homo', 'rgb_merged']
 
         self.color_aug = Augmentation() if cfg.DATA.COLOR_AUG and 'train' in self.phase else None
         cprint(f'Loaded HanCo {self.phase} {self.__len__()} sequences', 'red')
         if self.phase == 'train':
-            cprint(f'  with {len(self.image_aug)} image folders, {len(self.train_seq)} valid train sequences, 8 cameras', 'red')
+            # need train/valid/test HanCo data while training
+            # this "self.phase" means WHICH kind of data is choose from HanCo
+            cprint(f'  with {len(self.image_aug)} image folders, {len(self.train_seq): > 4} valid training sequences, 8 cameras', 'red')
+        elif self.phase == 'valid':
+            cprint(f'  with {len(self.image_aug)} image folders, {len(self.valid_seq): > 4} valid validate sequences, 8 cameras', 'red')
         else:
             cprint(f'  with {len(self.test_seq)} valid test sequences, 8 cameras', 'red')
+        if writer is not None:
+            writer.print_str(f'Loaded HanCo {self.phase} {self.__len__()} sequences')
 
 
     def _get_valid_sequence(self, hanco_root, DEBUG):
@@ -194,9 +205,24 @@ class HanCo(data.Dataset):
         print(f'Test({len(test_list)}): {test_list[:3] + ["..."] + test_list[-3:]}')
         return train_list, test_list
 
+    def _split_train_valid(self, train_seq, ratio=0.02):
+        '''
+        Split {train_seq} into train/ valid
+        by {ratio}:          1-ratio/ ratio
+
+        return sorted train / valid sequence
+        '''
+        np.random.shuffle(train_seq)
+        valid_size = int(len(train_seq) * ratio)
+        valid_seq = train_seq[ -valid_size:]
+        train_seq = train_seq[:-valid_size]
+        return sorted(train_seq), sorted(valid_seq)
+
     def __len__(self):
         if self.phase == 'train':
             return len(self.image_aug) * len(self.train_seq) * 8
+        elif self.phase == 'valid':
+            return len(self.image_aug) * len(self.valid_seq) * 8
         elif self.phase == 'test':
             return len(self.test_seq) * 8
 
@@ -207,6 +233,9 @@ class HanCo(data.Dataset):
                 raise NotImplemented('contrastive data audmentation not implemented yet')
             else:
                 return self.get_training_sample(aug_id, seq_id, cam_id)
+        elif self.phase == 'valid':
+            aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
+            return self.get_training_sample(aug_id, seq_id, cam_id)
         elif self.phase == 'test':
             seq_id, cam_id = self._inverse_compute_index(idx)
             return self.get_testing_sample(seq_id, cam_id)
@@ -214,8 +243,14 @@ class HanCo(data.Dataset):
     def _compute_index(self, aug_id, seq_id, cam_id):
         ''' aug_id, seq_id, cam_id -> index
         '''
-        return aug_id * self.len_train_seq_cam + \
-               self.train_seq.index(seq_id) * 8 + cam_id
+        if self.phase == 'train':
+            return aug_id * self.len_train_seq_cam + \
+                   self.train_seq.index(seq_id) * 8 + cam_id
+        elif self.phase == 'valid':
+            return aug_id * self.len_valid_seq_cam + \
+                   self.valid_seq.index(seq_id) * 8 + cam_id
+        elif self.phase == 'test':
+            return self.test_seq.index(seq_id) * 8 + cam_id
 
     def _inverse_compute_index(self, idx):
         ''' index -> (aug_id), seq_id, cam_id
@@ -225,7 +260,12 @@ class HanCo(data.Dataset):
             seq_id = self.train_seq[int(idx % self.len_train_seq_cam / 8)] # No. ? in train_seq
             cam_id = idx % 8
             return aug_id, seq_id, cam_id
-        if self.phase == 'test':
+        elif self.phase == 'valid':
+            aug_id = int(idx / self.len_valid_seq_cam)
+            seq_id = self.valid_seq[int(idx % self.len_valid_seq_cam / 8)] # No. ? in valid_seq
+            cam_id = idx % 8
+            return aug_id, seq_id, cam_id
+        elif self.phase == 'test':
             seq_id = self.test_seq[int(idx / 8)] # No. ? in train_seq
             cam_id = idx % 8
             return seq_id, cam_id
@@ -366,8 +406,8 @@ class HanCo(data.Dataset):
     def _get_init_bbox_from_mask(self, mask=None, img=None):
         ''' only called by get_[training, contrastive, testing]_sample
         '''
-        if self.phase in ['train']:
-            assert mask is not None, 'phase: train, {mask} should not be None ' + f'got: {mask}'
+        if self.phase in ['train', 'valid']:
+            assert mask is not None, 'phase: train|valid, {mask} should not be None ' + f'got: {mask}'
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contours = list(contours)
             contours.sort(key=cnt_area, reverse=True)
@@ -550,6 +590,9 @@ class HanCo(data.Dataset):
         if self.phase == 'train':
             aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
             title = f'HanCo  |  folder: {self.image_aug[aug_id]}  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
+        elif self.phase == 'valid':
+            aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
+            title = f'HanCo  |  folder: {self.image_aug[aug_id]}  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
         elif self.phase == 'test':
             seq_id, cam_id = self._inverse_compute_index(idx)
             title = f'HanCo  |  folder: rgb  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {res["start"]}'
@@ -634,10 +677,9 @@ if __name__ == '__main__':
     cfg.DATA.COLOR_AUG = False
     cfg.DATA.HANCO.ROT = 0
 
-    dataset = HanCo(cfg, 8, 'test')
-
-    index = dataset._compute_index(0, 2, 3)
-    index = 100
+    dataset = HanCo(cfg, 8, 'valid')
+    index = dataset._compute_index(0, 75, 3)  # 1st seq in validation: 75
+    # index = 100
 
     print(f'Show dataset[{index}]')
     data = dataset[index] # get 'rgb', seq:2, cam:3
