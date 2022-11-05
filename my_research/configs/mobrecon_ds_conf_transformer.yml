@@ -1,0 +1,30 @@
+VERSION: 0.1
+PHASE: 'train'
+MODEL:
+  NAME: MobRecon_DS_conf_Transformer
+  SPIRAL:
+    TYPE: 'DSConv'
+  # RESUME: checkpoint_last.pt
+DATA:
+  CONTRASTIVE: False
+  FRAME_COUNTS: 8  # for seq of images
+  # COLOR_AUG: False
+  HANCO:
+    USE: True
+    ROOT: 'data/HanCo'
+  COMPHAND:
+    USE: False
+  FREIHAND:
+    USE: False
+TRAIN:
+  DATASET: 'HANCO'
+  EPOCHS: 38
+  BATCH_SIZE: 4
+  LR: 0.001
+  GPU_ID: 0,
+VAL:
+  DATASET: 'HANCO'
+  BATCH_SIZE: 1
+TEST:
+  DATASET: 'HANCO'
+  SAVE_PRED: False
