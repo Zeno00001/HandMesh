@@ -325,7 +325,7 @@ class MyTransformer(nn.Transformer):
             # print(mem_embedding[0])
 
             # Data
-            tgt = torch.zeros((B, J, D))
+            tgt = torch.zeros((B, J, D), device=src.device)  # to gpu
             memory_BJsD = update_embedding(memory_BJsD, memory_BFJD[:, frame_id, :, :], dim=1)
 
             output = self.decoder(tgt, memory_BJsD, tgt_mask=tgt_mask, memory_mask=memory_mask,

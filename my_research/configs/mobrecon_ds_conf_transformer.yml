@@ -17,14 +17,14 @@ DATA:
   FREIHAND:
     USE: False
 TRAIN:
-  DATASET: 'HANCO'
+  DATASET: 'HanCo'  # dataset class name
   EPOCHS: 38
   BATCH_SIZE: 4
   LR: 0.001
   GPU_ID: 0,
 VAL:
-  DATASET: 'HANCO'
+  DATASET: 'HanCo'
   BATCH_SIZE: 1
 TEST:
-  DATASET: 'HANCO'
+  DATASET: 'HanCo'
   SAVE_PRED: False

@@ -100,7 +100,7 @@ from my_research.build import DATA_REGISTRY
 
 @DATA_REGISTRY.register()
 class HanCo(data.Dataset):
-    def __init__(self, cfg, frame_counts=8, phase='train', writer=None):
+    def __init__(self, cfg, phase='train', frame_counts=8, writer=None):
         '''Init a FreiHAND Dataset
 
         Args:
@@ -111,6 +111,9 @@ class HanCo(data.Dataset):
         '''
         super(HanCo, self).__init__()
         self.cfg = cfg
+        if phase == 'val':
+            phase = 'valid'
+
         self.phase = phase
         assert phase in ('train', 'test', 'valid'), f'phase should be "train" or "test" or "valid", got: {phase}'
         self.frame_counts = frame_counts
