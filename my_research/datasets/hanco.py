@@ -231,11 +231,14 @@ class HanCo(data.Dataset):
 
     def __getitem__(self, idx):
         if self.phase == 'train':
-            aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
-            if self.cfg.DATA.CONTRASTIVE:
-                raise NotImplemented('contrastive data audmentation not implemented yet')
-            else:
-                return self.get_training_sample(aug_id, seq_id, cam_id)
+            try:
+                aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
+                if self.cfg.DATA.CONTRASTIVE:
+                    raise NotImplemented('contrastive data audmentation not implemented yet')
+                else:
+                    return self.get_training_sample(aug_id, seq_id, cam_id)
+            except:
+                raise Exception(f'--- [Error] at {self.phase}: data[{idx}] --- aug: {aug_id}, seq: {seq_id}, cam: {cam_id}')
         elif self.phase == 'valid':
             aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
             return self.get_training_sample(aug_id, seq_id, cam_id)
@@ -680,8 +683,8 @@ if __name__ == '__main__':
     cfg.DATA.COLOR_AUG = False
     cfg.DATA.HANCO.ROT = 0
 
-    dataset = HanCo(cfg, 8, 'valid')
-    index = dataset._compute_index(0, 75, 3)  # 1st seq in validation: 75
+    dataset = HanCo(cfg, phase='train', frame_counts=8)
+    index = dataset._compute_index(0, 2, 3)  # 1st seq in validation: 75
     # index = 100
 
     print(f'Show dataset[{index}]')
