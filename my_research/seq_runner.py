@@ -233,10 +233,13 @@ class Runner(object):
                 out[key] = rearrange(data[key], 'B F D -> (B F) D')
             elif len(shape) == 4:
                 # (B, F, J, D)
-                out[key] = rearrange(out[key], 'B F J D -> (B F) J D')
+                out[key] = rearrange(data[key], 'B F J D -> (B F) J D')
             elif len(shape) == 5:
                 # (B, F, D, W, H)
-                out[key] = rearrange(out[key], 'B F D H W -> (B F) D H W')
+                out[key] = rearrange(data[key], 'B F D H W -> (B F) D H W')
+            elif len(shape) == 1:
+                # case: data['start']
+                pass
             else:
                 raise RuntimeError(f'len(shape) out of range: {shape}')
         return out
@@ -258,41 +261,41 @@ class Runner(object):
                 # get data then infernce
                 data = self.phrase_data(data)
                 out = self.model(data['img'])
+                for frame_id in range(out['verts'].shape[1]):
+                    # get vertex pred
+                    verts_pred = out['verts'][0][frame_id].cpu().numpy() * 0.2  # batch:0, frame: frame_id
+                    joint_cam_pred = mano_to_mpii(np.matmul(self.j_reg, verts_pred)) * 1000.0
 
-                # get vertex pred
-                verts_pred = out['verts'][0].cpu().numpy() * 0.2
-                joint_cam_pred = mano_to_mpii(np.matmul(self.j_reg, verts_pred)) * 1000.0
+                    # get mask pred
+                    mask_pred = out.get('mask')  # [frame_id], None Obj
+                    if mask_pred is not None:
+                        mask_pred = (mask_pred[0] > 0.3).cpu().numpy().astype(np.uint8)
+                        mask_pred = cv2.resize(mask_pred, (data['img'].size(3+1), data['img'].size(2+1)))
+                    else:
+                        mask_pred = np.zeros((data['img'].size(3+1), data['img'].size(2+1)), np.uint8)
 
-                # get mask pred
-                mask_pred = out.get('mask')
-                if mask_pred is not None:
-                    mask_pred = (mask_pred[0] > 0.3).cpu().numpy().astype(np.uint8)
-                    mask_pred = cv2.resize(mask_pred, (data['img'].size(3), data['img'].size(2)))
-                else:
-                    mask_pred = np.zeros((data['img'].size(3), data['img'].size(2)), np.uint8)
+                    # get uv pred
+                    joint_img_pred = out.get('joint_img')[:, frame_id]
+                    if joint_img_pred is not None:
+                        joint_img_pred = joint_img_pred[0].cpu().numpy() * data['img'].size(3)  # BCHW -> BFCHW
+                    else:
+                        joint_img_pred = np.zeros((21, 2), dtype=np.float)
 
-                # get uv pred
-                joint_img_pred = out.get('joint_img')
-                if joint_img_pred is not None:
-                    joint_img_pred = joint_img_pred[0].cpu().numpy() * data['img'].size(2)
-                else:
-                    joint_img_pred = np.zeros((21, 2), dtype=np.float)
+                    # pck
+                    joint_cam_gt = data['joint_cam'][0][frame_id].cpu().numpy() * 1000.0
+                    joint_cam_align = rigid_align(joint_cam_pred, joint_cam_gt)
+                    evaluator_2d.feed(data['joint_img'][0][frame_id].cpu().numpy() * data['img'].size(2+1), joint_img_pred)
+                    evaluator_rel.feed(joint_cam_gt, joint_cam_pred)
+                    evaluator_pa.feed(joint_cam_gt, joint_cam_align)
 
-                # pck
-                joint_cam_gt = data['joint_cam'][0].cpu().numpy() * 1000.0
-                joint_cam_align = rigid_align(joint_cam_pred, joint_cam_gt)
-                evaluator_2d.feed(data['joint_img'][0].cpu().numpy() * data['img'].size(2), joint_img_pred)
-                evaluator_rel.feed(joint_cam_gt, joint_cam_pred)
-                evaluator_pa.feed(joint_cam_gt, joint_cam_align)
-
-                # error
-                if 'mask_gt' in data.keys():
-                    mask_iou.append(compute_iou(mask_pred, cv2.resize(data['mask_gt'][0].cpu().numpy(), (data['img'].size(3), data['img'].size(2)))))
-                else:
-                    mask_iou.append(0)
-                joint_cam_errors.append(np.sqrt(np.sum((joint_cam_pred - joint_cam_gt) ** 2, axis=1)))
-                pa_joint_cam_errors.append(np.sqrt(np.sum((joint_cam_gt - joint_cam_align) ** 2, axis=1)))
-                joint_img_errors.append(np.sqrt(np.sum((data['joint_img'][0].cpu().numpy()*data['img'].size(2) - joint_img_pred) ** 2, axis=1)))
+                    # error
+                    if 'mask_gt' in data.keys():
+                        mask_iou.append(compute_iou(mask_pred, cv2.resize(data['mask_gt'][0][frame_id].cpu().numpy(), (data['img'].size(3+1), data['img'].size(2+1)))))
+                    else:
+                        mask_iou.append(0)
+                    joint_cam_errors.append(np.sqrt(np.sum((joint_cam_pred - joint_cam_gt) ** 2, axis=1)))
+                    pa_joint_cam_errors.append(np.sqrt(np.sum((joint_cam_gt - joint_cam_align) ** 2, axis=1)))
+                    joint_img_errors.append(np.sqrt(np.sum((data['joint_img'][0][frame_id].cpu().numpy()*data['img'].size(2+1) - joint_img_pred) ** 2, axis=1)))
 
             # get auc
             _1, _2, _3, auc_rel, pck_curve_rel, thresholds2050 = evaluator_rel.get_measures(20, 50, 20)
@@ -306,7 +309,7 @@ class Runner(object):
 
             if self.board is not None:
                 self.board_scalar('test', self.epoch, **{'auc_loss': auc_rel, 'pa_auc_loss': auc_pa, '2d_auc_loss': auc_2d, 'mIoU_loss': miou, 'uve': uve, 'mpjpe_loss': mpjpe, 'pampjpe_loss': pampjpe})
-                self.board_img('test', self.epoch, data, out, {})
+                self.board_img('test', self.epoch, self._reshape_BF_to_B(data), self._reshape_BF_to_B(out), {})
             elif self.args.world_size < 2:
                 print( f'pampjpe: {pampjpe}, mpjpe: {mpjpe}, uve: {uve}, miou: {miou}, auc_rel: {auc_rel}, auc_pa: {auc_pa}, auc_2d: {auc_2d}')
                 print('thresholds2050', thresholds2050)
