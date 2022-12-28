@@ -377,7 +377,12 @@ class Runner(object):
         from utils.read import save_mesh
         self.set_demo(self.args)
 
-        INFER_LIST = ['01M', '01R', '01U', '03M', '03R', '03U', '05M', '05R', '05U', '07M', '07R', '07U', '09M', '09R', '09U', '21M', '21R', '21U', '23M', '23R', '23U', '25M', '25R', '25U', '27M', '27R', '27U', '29M', '29R', '29U', '41M', '41R', '41U', '43M', '43R', '43U', '45M', '45R', '45U', '47M', '47R', '47U', '49M', '49R', '49U']
+
+        INFER_LIST = []
+        EscapeFile = ('default.npy', '.gitignore', 'demo')
+        for fold in os.listdir(os.path.join(self.args.work_dir, 'images')):
+            if fold not in EscapeFile:
+                INFER_LIST += [fold]
 
         for i in range(len(INFER_LIST)):
             INFER_FOLDER = INFER_LIST[i]
