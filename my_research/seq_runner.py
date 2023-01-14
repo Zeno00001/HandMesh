@@ -47,7 +47,9 @@ class Runner(object):
     def run(self):
         if self.cfg.PHASE == 'train':
             if self.val_loader is not None and self.epoch > 0:
-                self.best_val_loss = self.eval()
+                if self.args.exp_name != 'test':
+                    self.best_val_loss = self.eval()
+                    print(f'Epoch: {self.epoch}, PA-MPJPE: {self.best_val_loss}')  # Reg(vert) <-> gt_joint
             for epoch in range(self.start_epoch, self.max_epochs + 1):
                 self.epoch = epoch
                 t = time.time()
@@ -153,7 +155,9 @@ class Runner(object):
 
     def train(self):
         self.writer.print_str('TRAINING ..., Epoch {}/{}'.format(self.epoch, self.max_epochs))
-        self.model.train()
+        self.model.train()  # set to eval to avoid dropouted attention map
+        if self.args.exp_name == 'test':
+            self.model.eval()
         total_loss = 0
         forward_time = 0.
         backward_time = 0.
@@ -169,8 +173,12 @@ class Runner(object):
             losses = self.loss(verts_pred=out.get('verts'),
                                joint_img_pred=out['joint_img'],
                                joint_conf_pred=out['joint_conf'],  # append conf prediciton
+                               joint_3d_pred=out.get('joints'),    # append joint prediction
+
                                verts_gt=data.get('verts'),
                                joint_img_gt=data['joint_img'],
+                               joint_3d_gt=data.get('joint_cam'),  # append joint root-relative
+
                                face=self.face,
                                aug_param=(None, data.get('aug_param'))[self.epoch>4],
                                bb2img_trans=data.get('bb2img_trans'),
@@ -305,6 +313,7 @@ class Runner(object):
             miou = np.array(mask_iou).mean()
             mpjpe = np.array(joint_cam_errors).mean()
             pampjpe = np.array(pa_joint_cam_errors).mean()
+            print(f'pampjpe STD: {np.array(pa_joint_cam_errors).std()}')
             uve = np.array(joint_img_errors).mean()
 
             if self.board is not None:

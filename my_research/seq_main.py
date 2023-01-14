@@ -92,9 +92,20 @@ def main(args):
                 model_path = cfg.MODEL.RESUME
             else:
                 model_path = osp.join(args.checkpoints_dir, cfg.MODEL.RESUME)
+                if args.exp_name == 'test':
+                    model_path = osp.join(args.out_dir, '..', args.check_exp,
+                                          'checkpoints', cfg.MODEL.RESUME)
             checkpoint = torch.load(model_path, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            # model.load_state_dict(checkpoint['model_state_dict'])
+            missing, unexpected = model.load_state_dict(
+                checkpoint['model_state_dict'], strict=False
+            )
+            print(f'missing    params: {chr(10).join(missing)}')  # chr(10) == '\n'
+            print(f'unexpected params: {chr(10).join(unexpected)}')
+            try:  # TODO: mini bug: not load optimizer state if MISMATCH
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            except:
+                pass
             epoch = checkpoint['epoch'] + 1
             writer.print_str('Resume from: {}, start epoch: {}'.format(model_path, epoch))
             print('Resume from: {}, start epoch: {}'.format(model_path, epoch))
@@ -107,6 +118,9 @@ def main(args):
             model_path = cfg.MODEL.RESUME
         else:
             model_path = osp.join(args.checkpoints_dir, cfg.MODEL.RESUME)
+            if args.exp_name == 'test':
+                model_path = osp.join(args.out_dir, '..', args.check_exp,
+                                      'checkpoints', cfg.MODEL.RESUME)
             checkpoint = torch.load(model_path, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
             print(f'Eval model in {model_path}, with dataset: {cfg.VAL.DATASET}')
@@ -114,7 +128,7 @@ def main(args):
         input('[ERROR] wrong cfg PHASE while loading model')
 
     # data
-    kwargs = {"pin_memory": True, "num_workers": 4, "drop_last": True}  # num_worker: 8
+    kwargs = {"pin_memory": True, "num_workers": 6, "drop_last": True}  # num_worker: 8
     if cfg.PHASE in ['train',]:
         train_dataset = build_dataset(cfg, phase='train', frame_counts=8, writer=writer)
         train_sampler = None
@@ -167,4 +181,5 @@ if __name__ == "__main__":
     args = CFGOptions().parse()
     # args.exp_name = 'test'
     # args.config_file = 'my_research/configs/mobrecon_ds_conf_transformer.yml'
+    # args.check_exp = 'base_enc3_dec3_normtwice_reg_at_enc_DF_AR21Z_weightConf'
     main(args)
