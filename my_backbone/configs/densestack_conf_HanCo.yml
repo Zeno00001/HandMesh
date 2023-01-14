@@ -1,0 +1,30 @@
+VERSION: 0.1
+PHASE: 'train'
+MODEL:
+  NAME: DenseStack_Conf
+  # SPIRAL:
+  #   TYPE: 'DSConv'
+  # RESUME: checkpoint_last.pt
+DATA:
+  # COLOR_AUG: False  # set while evaluating
+  CONTRASTIVE: False
+  FREIHAND:
+    USE: True
+    ROOT: 'data/FreiHAND'
+    # ROT: 0          # set while evaluating
+    # SCALE: 0.0      # set while evaluating
+  COMPHAND:
+    USE: True
+    ROOT: 'data/CompHand'
+TRAIN:
+  DATASET: 'MultipleDatasets'
+  EPOCHS: 80
+  BATCH_SIZE: 128
+  LR: 0.001
+  GPU_ID: 0,
+VAL:
+  DATASET: 'Ge'
+  BATCH_SIZE: 1
+TEST:
+  DATASET: 'FreiHAND'
+  SAVE_PRED: False
