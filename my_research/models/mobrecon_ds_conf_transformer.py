@@ -84,9 +84,8 @@ class MobRecon_DS_conf_Transformer(nn.Module):
             'joint_conf': rearrange(pred2d_pt[:, :, 2:], '(B F) J D -> B F J D', B=B), # (B, F, 21, 1)
         }
         if pred_j3d != []:
-            out['joints'] = []
-            for i in range(len(pred_j3d)):
-                out['joints'] += [rearrange(pred_j3d[i], '(B F) J D -> B F J D', B=B)]
+            # combine list(tensor) to tensor if exists
+            out['joints'] = rearrange(pred_j3d, 'H (B F) J D -> H B F J D', B=B)  # H for each Head output
         return out
 
     def loss(self, **kwargs):
@@ -106,10 +105,9 @@ class MobRecon_DS_conf_Transformer(nn.Module):
         _distance = _distance.detach()
         joint_conf_gt = 2 - 2 * torch.sigmoid(_distance * 30)
         ## joint 3d
-        if kwargs.get('joint_3d_pred') != []:
-            joint_preds = kwargs['joint_3d_pred']
-            for i in range(len(joint_preds)):
-                joint_preds[i] = [ rearrange(joint_preds[i], 'B F J D -> (B F) J D')]
+        if kwargs.get('joint_3d_pred') is not None:
+            Headcounts = kwargs['joint_3d_pred'].shape[0]  # (H B F J 3), H for each Head output
+            joint_preds = rearrange(kwargs['joint_3d_pred'], 'H B F J D -> H (B F) J D')
             joint_gt = rearrange(kwargs['joint_3d_gt'], 'B F J D -> (B F) J D')
 
         # compute loss
@@ -118,11 +116,11 @@ class MobRecon_DS_conf_Transformer(nn.Module):
         loss_dict['verts_loss'] = l1_loss(verts_pred, verts_gt)
         loss_dict['joint_img_loss'] = l1_loss(joint_img_pred, joint_img_gt)
         loss_dict['joint_conf_loss'] = 0.1 * l1_loss(joint_conf_pred.view(-1, 21), joint_conf_gt)
-        if kwargs.get('joint_3d_pred') != []:
+        if kwargs.get('joint_3d_pred') is not None:
             joint_3d_pred_loss = 0
-            for each_joint_pred in joint_preds:
-                joint_3d_pred_loss += l1_loss(each_joint_pred, joint_gt)
-            joint_3d_pred_loss /= len(joint_preds)
+            for head_i in range(Headcounts):
+                joint_3d_pred_loss += l1_loss(joint_preds[head_i], joint_gt)
+            joint_3d_pred_loss /= Headcounts
             loss_dict['joint_3d_loss'] = 0.5 * joint_3d_pred_loss
         
         loss_dict['normal_loss'] = 0.1 * normal_loss(verts_pred, verts_gt, kwargs['face'].to(verts_pred.device))
@@ -303,7 +301,7 @@ class SequencialReg2DDecode3D(nn.Module):
                         'joint mask': padding_mask, # [padding_mask, None], (B F J)
                         'joint conf': conf,         # [None,         conf], (B F J)
                     },
-                    ReturnEncoderOutput='last'      # ['no', 'last', 'each']
+                    ReturnEncoderOutput='each'      # ['no', 'last', 'each']
                                                     # =='last', only if Mode=='base
                     )
         x = rearrange(x, 'B F J D -> (B F) J D')  # J or V
