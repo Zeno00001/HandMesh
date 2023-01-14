@@ -5,11 +5,29 @@ see exp_encoder(), exp_decoder(), exp_transformer() for more details
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from einops import rearrange, repeat
+from matplotlib import pyplot as plt
 
 # for func input format
 from torch import Tensor
-from typing import Optional
+from typing import Optional, Union, Callable, Any, Dict, List
+
+CHECK_W = False
+
+def show_attn(attn):
+    # attn.shape: (B, J, J)
+    # type == numpy arr
+    B = attn.shape[0]
+    H = min(2, B)
+
+    for i in range(H): # first 5 batches
+        ax = plt.subplot(H, 1, i+1)
+        ax.imshow(attn[i])
+        ax.set_title(f'Batch: {i}')
+        # ax.axis('off')
+
+    plt.show()
 
 
 class MyEncoderLayer(nn.TransformerEncoderLayer):
@@ -23,8 +41,32 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
     ! Add with_pos_embed() from DETR, transformer.py line:209
         MAKE sure embedding is same size to x
     '''
-    def forward(self, src: Tensor, src_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
+    def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
+                 activation = F.relu,
+                 layer_norm_eps: float = 1e-5, batch_first: bool = False, norm_first: bool = False,
+                 device=None, dtype=None,
+                 NormTwice=False,
+                 ):
+        super().__init__(d_model, nhead, dim_feedforward, dropout,
+                 activation,
+                 layer_norm_eps, batch_first, norm_first,
+                 device, dtype)
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        # self.norm1 = nn.LayerNorm((21, d_model), eps=layer_norm_eps, **factory_kwargs)
+        # self.norm2 = nn.LayerNorm((21, d_model), eps=layer_norm_eps, **factory_kwargs)
+        if NormTwice:
+            assert self.norm_first == False, 'norm_first should be False, while applying NormTwice'
+            self.norm3 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)  # _sa out
+            self.norm4 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)  # _ff out
+        else:
+            def empty_func(x):
+                return x
+            self.norm3 = self.norm4 = empty_func
+
+    def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
+        src_key_padding_mask: Optional[Tensor] = None,
         x_embedding: Optional[Tensor] = None,  # ! NEW joint embedding
+        WeightedPaddingMask=False,           # Apply key <- key * src_key_passing_mask; src_mask~(0, 1)
         ) -> Tensor:
         r"""Pass the input through the encoder layer.
 
@@ -41,11 +83,17 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
 
         x = src
         if self.norm_first:
-            x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, x_embedding)
+            x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, x_embedding, WeightedPaddingMask)
             x = x + self._ff_block(self.norm2(x))
         else:
-            x = self.norm1(x + self._sa_block(x, src_mask, src_key_padding_mask, x_embedding))
-            x = self.norm2(x + self._ff_block(x))
+            _sa_out = self.norm3(self._sa_block(x, src_mask, src_key_padding_mask, x_embedding, WeightedPaddingMask))  # check _sa.var()
+            x = self.norm1(x + _sa_out)
+            _ff_out = self.norm4(self._ff_block(x))  # check _ff.var()
+            x = self.norm2(x + _ff_out)
+            # x = x + self.norm3(self._sa_block(x, src_mask, src_key_padding_mask, x_embedding))
+            # x = self.norm1(x)
+            # x = x + self.norm4(self._ff_block(x))
+            # x = self.norm2(x)
 
         return x
 
@@ -53,14 +101,21 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
     def _sa_block(self, x: Tensor,
                   attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor],
                   x_embedding: Optional[Tensor],  # ! NEW joint embedding
+                  WeightedPaddingMask,
                   ) -> Tensor:
         q = k = self.with_pos_embed(x, x_embedding)
-        # q = k = self.with_pos_embed(q, serial_embedding)
 
-        x = self.self_attn(query=q, key=k, value=x,
+        if WeightedPaddingMask:
+            # Apply: key <- key * confidence_score
+            k = k * rearrange(key_padding_mask, 'B J -> B J ()')
+            key_padding_mask = None
+
+        x, w = self.self_attn(query=q, key=k, value=x,
                            attn_mask=attn_mask,
                            key_padding_mask=key_padding_mask,
-                           need_weights=False)[0]
+                           need_weights=CHECK_W)  # True for attention map
+        if CHECK_W:
+            show_attn(w.detach().cpu().numpy())
         return self.dropout1(x)
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
@@ -78,6 +133,8 @@ class MyEncoder(nn.TransformerEncoder):
     '''
     def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
         x_embedding: Optional[Tensor] = None,  # ! NEW joint embedding
+        WeightedPaddingMask=False,
+        ReturnEachLayerOutput=False,
         ) -> Tensor:
         r"""Pass the input through the encoder layers in turn.
 
@@ -90,14 +147,20 @@ class MyEncoder(nn.TransformerEncoder):
             see the docs in Transformer class.
         """
         output = src
+        out_each_layer = []
 
         for mod in self.layers:
-            output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask, x_embedding=x_embedding)
+            output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask, x_embedding=x_embedding, WeightedPaddingMask=WeightedPaddingMask)
+            if ReturnEachLayerOutput:
+                out_each_layer += [output]
 
         if self.norm is not None:
             output = self.norm(output)
+            if ReturnEachLayerOutput:
+                for i in range(self.num_layers):
+                    out_each_layer[i] = self.norm(out_each_layer[i])
 
-        return output
+        return output, out_each_layer
 
 class MyDecoderLayer(nn.TransformerDecoderLayer):
     '''
@@ -110,9 +173,35 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
     ! Add with_pos_embed() from DETR, transformer.py line:209
         ! MAKE sure embedding is same size to x
     '''
+    def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
+                 activation = F.relu,
+                 layer_norm_eps: float = 1e-5, batch_first: bool = False, norm_first: bool = False,
+                 device=None, dtype=None,
+                 NormTwice=False,
+                 ) -> None:
+        super().__init__(d_model, nhead, dim_feedforward, dropout,
+                 activation,
+                 layer_norm_eps, batch_first, norm_first,
+                 device, dtype)
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        # self.norm1 = nn.LayerNorm((21, d_model), eps=layer_norm_eps, **factory_kwargs)
+        # self.norm2 = nn.LayerNorm((21, d_model), eps=layer_norm_eps, **factory_kwargs)
+        # self.norm3 = nn.LayerNorm((21, d_model), eps=layer_norm_eps, **factory_kwargs)
+        if NormTwice:
+            assert self.norm_first == False, 'norm_first should be False, while applying NormTwice'
+            self.norm4 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)  # _sa out
+            self.norm5 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)  # _mha out
+            self.norm6 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)  # _ff out
+        else:
+            def empty_func(x):
+                return x
+            self.norm4 = self.norm5 = self.norm6 = empty_func
+
+
     def forward(self, tgt: Tensor, memory: Tensor, tgt_mask: Optional[Tensor] = None, memory_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
-                tgt_embedding: Optional[Tensor] = None, memory_embedding: Optional[Tensor] = None  # ! NEW 2 embedding
+                tgt_embedding: Optional[Tensor] = None, memory_embedding: Optional[Tensor] = None,  # ! NEW 2 embedding
+                WeightedMemPaddingMask=False,  # Apply key <- key * memory_key_padding_mask; mem_mask~(0, 1)
                 ) -> Tensor:
         r"""Pass the inputs (and mask) through the decoder layer.
 
@@ -133,13 +222,24 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
         if self.norm_first:
             x = x + self._sa_block(self.norm1(x), tgt_mask, tgt_key_padding_mask, x_embedding=tgt_embedding)
             x = x + self._mha_block(self.norm2(x), memory, memory_mask, memory_key_padding_mask,
-                                    x_embedding=tgt_embedding, mem_embedding=memory_embedding)
+                                    x_embedding=tgt_embedding, mem_embedding=memory_embedding,
+                                    WeightedMemPaddingMask=WeightedMemPaddingMask)
             x = x + self._ff_block(self.norm3(x))
         else:
-            x = self.norm1(x + self._sa_block(x, tgt_mask, tgt_key_padding_mask, x_embedding=tgt_embedding))
-            x = self.norm2(x + self._mha_block(x, memory, memory_mask, memory_key_padding_mask,
-                                               x_embedding=tgt_embedding, mem_embedding=memory_embedding))
-            x = self.norm3(x + self._ff_block(x))
+            _sa_out = self.norm4(self._sa_block(x, tgt_mask, tgt_key_padding_mask, x_embedding=tgt_embedding))
+            x = self.norm1(x + _sa_out)
+
+            _ca_out = self.norm5(self._mha_block(x, memory, memory_mask, memory_key_padding_mask,
+                                                 x_embedding=tgt_embedding, mem_embedding=memory_embedding,
+                                                 WeightedMemPaddingMask=WeightedMemPaddingMask))
+            x = self.norm2(x + _ca_out)
+
+            _ff_out = self.norm6(self._ff_block(x))
+            x = self.norm3(x + _ff_out)
+            # x = self.norm1(x + self.norm4(self._sa_block(x, tgt_mask, tgt_key_padding_mask, x_embedding=tgt_embedding)))
+            # x = self.norm2(x + self.norm5(self._mha_block(x, memory, memory_mask, memory_key_padding_mask,
+            #                                               x_embedding=tgt_embedding, mem_embedding=memory_embedding)))
+            # x = self.norm3(x + self.norm6(self._ff_block(x)))
 
         return x
 
@@ -150,25 +250,34 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
                   ) -> Tensor:
         q = k = self.with_pos_embed(x, x_embedding)
 
-        x = self.self_attn(query=q, key=k, value=x,
+        x, w = self.self_attn(query=q, key=k, value=x,
                            attn_mask=attn_mask,
                            key_padding_mask=key_padding_mask,
-                           need_weights=False)[0]
+                           need_weights=CHECK_W)  # True for attention map
+        if CHECK_W:
+            show_attn(w.detach().cpu().numpy())
         return self.dropout1(x)
 
     # multihead attention block
     def _mha_block(self, x: Tensor, mem: Tensor,
                    attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor],
-                   x_embedding: Optional[Tensor], mem_embedding: Optional[Tensor]  # ! NEW 2 embeddings
+                   x_embedding: Optional[Tensor], mem_embedding: Optional[Tensor],  # ! NEW 2 embeddings
+                   WeightedMemPaddingMask,
                    ) -> Tensor:
         q = self.with_pos_embed(x, x_embedding)
         k = self.with_pos_embed(mem, mem_embedding)
         # v = mem
+        if WeightedMemPaddingMask:
+            # Apply: key <- key * confidence_score
+            k = k * rearrange(key_padding_mask, 'B FJ -> B FJ ()')
+            key_padding_mask = None
 
-        x = self.multihead_attn(query=q, key=k, value=mem,
+        x, w = self.multihead_attn(query=q, key=k, value=mem,
                                 attn_mask=attn_mask,
                                 key_padding_mask=key_padding_mask,
-                                need_weights=False)[0]
+                                need_weights=CHECK_W)  # True for attention map
+        if CHECK_W:
+            show_attn(w.detach().cpu().numpy())
         return self.dropout2(x)
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
@@ -188,7 +297,8 @@ class MyDecoder(nn.TransformerDecoder):
     def forward(self, tgt: Tensor, memory: Tensor, tgt_mask: Optional[Tensor] = None,
                 memory_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
                 memory_key_padding_mask: Optional[Tensor] = None,
-                tgt_embedding: Optional[Tensor] = None, memory_embedding: Optional[Tensor] = None  # ! NEW 2 embedding
+                tgt_embedding: Optional[Tensor] = None, memory_embedding: Optional[Tensor] = None,  # ! NEW 2 embedding
+                WeightedMemPaddingMask: bool = False,
                 ) -> Tensor:
         r"""Pass the inputs (and mask) through the decoder layer in turn.
 
@@ -205,13 +315,15 @@ class MyDecoder(nn.TransformerDecoder):
         """
         output = tgt
 
-        for mod in self.layers:
+        # for mod in self.layers:
+        for i, mod in enumerate(self.layers):
             output = mod(output, memory, tgt_mask=tgt_mask,
                          memory_mask=memory_mask,
                          tgt_key_padding_mask=tgt_key_padding_mask,
                          memory_key_padding_mask=memory_key_padding_mask,
                          tgt_embedding=tgt_embedding,
-                         memory_embedding=memory_embedding)
+                         memory_embedding=memory_embedding,
+                         WeightedMemPaddingMask=WeightedMemPaddingMask)
 
         if self.norm is not None:
             output = self.norm(output)
@@ -226,10 +338,31 @@ class MyTransformer(nn.Transformer):
         joint_embedding.shape : (J, D), J: joint_counts( may +1 for global feature)
         serial_embedding.shape: (S, D), S: max_serial counts, S == F(frame counts)
     '''
-    def forward(self, src: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,  # ! remove tgt param
+    def __init__(self, d_model: int = 512, nhead: int = 8, num_encoder_layers: int = 6,
+                 num_decoder_layers: int = 6, dim_feedforward: int = 2048, dropout: float = 0.1,
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+                 custom_encoder: Optional[Any] = None, custom_decoder: Optional[Any] = None,
+                 layer_norm_eps: float = 1e-5, batch_first: bool = False, norm_first: bool = False,
+                 device=None, dtype=None,
+                 Mode: Optional[str]='base',
+                 DecoderForwardConfigs: Optional[dict]=None,
+                 ) -> None:
+        super().__init__(d_model, nhead, num_decoder_layers, num_decoder_layers,
+                         dim_feedforward, dropout, activation,
+                         custom_encoder, custom_decoder,
+                         layer_norm_eps, batch_first, norm_first,
+                         device, dtype,
+                         )
+        self.Mode = Mode
+        assert DecoderForwardConfigs is not None, 'DecoderForwardConfigs should be initial in get_transformer()'
+        self.DecoderForwardConfigs = DecoderForwardConfigs
+
+    def forward_old(self, src: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,  # ! remove tgt param
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
-                joint_embedding: Optional[Tensor] = None, serial_embedding: Optional[Tensor] = None  # ! NEW 2 embedding
+                joint_embedding: Optional[Tensor] = None,  # ! NEW 3 embedding, (J, C)
+                serial_embedding: Optional[Tensor] = None,  # (F, C)
+                positional_embedding: Optional[Tensor] = None  # (BF, J, C)
                 ) -> Tensor:
         r"""Take in and process masked source/target sequences.
 
@@ -291,15 +424,49 @@ class MyTransformer(nn.Transformer):
 
         B, F, J, D = src.shape  # BatchSize, FrameCounts, JointCounts, featureDim
         serial_embedding = serial_embedding[:F, :]  # only previous F embeddings is used
-        src = rearrange(src, 'B F J D -> (B F) J D')  # B, Seq, Dim
+
+        # duplicate with self.combine_embed()
+        def sum_embedding(x_embed, add_embed):
+            ''' return x_embed + add_embed '''
+            if x_embed == None:
+                if add_embed == None:
+                    return None
+                else:
+                    return add_embed
+            else:
+                if add_embed == None:
+                    return x_embed
+                else:
+                    assert x_embed.shape == add_embed.shape, f'shape not matched: {x_embed.shape} / {add_embed.shape}'
+                    return x_embed + add_embed
+
+        # Expand ALL embeddings to (B, F, J, D)
+        if joint_embedding is not None:
+            joint_embedding = repeat(joint_embedding, 'J D -> B F J D', B=B, F=F)
+        # if positional_embedding is not None:
+        #     pass
+        if serial_embedding is not None:
+            serial_embedding = repeat(serial_embedding, 'F D -> B F J D', B=B, J=J)
 
         # Encoder x_embedding
         x_embedding = None
-        if joint_embedding != None:
-            x_embedding = repeat(joint_embedding, 'J D -> BF J D', BF = B * F)
+        x_embedding = self.combine_embed(
+            x_embedding,
+            joint_embedding
+        )
+        x_embedding = self.combine_embed(
+            x_embedding,
+            positional_embedding
+        )  # x_embedding == None | joint_ | positional_ | joint_ + positional_
+        x_embedding = rearrange(x_embedding, 'B F J D -> (B F) J D')
+
+        src = rearrange(src, 'B F J D -> (B F) J D')  # B, Seq, Dim
         memory_BFJD = self.encoder(src, mask=src_mask, src_key_padding_mask=src_key_padding_mask,
                               x_embedding=x_embedding)
         memory_BFJD = rearrange(memory_BFJD, '(B F) J D -> B F J D', B=B)
+
+        # # encoder only
+        # return memory_BFJD
 
         def update_embedding(memory, appended, dim):
             if memory == None:
@@ -310,11 +477,26 @@ class MyTransformer(nn.Transformer):
         mem_embedding = None
 
         # Decoder
-        full_joint_embedding = repeat(joint_embedding, 'J D -> F J D', F=F)
-        full_serial_embedding = repeat(serial_embedding, 'F D -> F J D', J=J)
-        full_embedding = full_joint_embedding + full_serial_embedding
+        mem_embedding_BFJD = None
+        batched_full_embedding = self.combine_embed(
+            batched_full_embedding,
+            joint_embedding
+        )
+        batched_full_embedding = self.combine_embed(
+            batched_full_embedding,
+            positional_embedding
+        )
+        batched_full_embedding = self.combine_embed(
+            batched_full_embedding,
+            serial_embedding
+        )  # embedding_ == None | joint_ | positional_ | serial_ | combination_
+        batched_full_embedding = rearrange(batched_full_embedding, 'B F J D -> B (F J) D')
 
-        batched_full_embedding = repeat(full_embedding, 'F J D -> B (F J) D', B=B)
+        # full_joint_embedding = repeat(joint_embedding, 'J D -> F J D', F=F)
+        # full_serial_embedding = repeat(serial_embedding, 'F D -> F J D', J=J)
+        # full_embedding = full_joint_embedding + full_serial_embedding
+
+        # batched_full_embedding = repeat(full_embedding, 'F J D -> B (F J) D', B=B)
 
         memory_BJsD = None  # (B,J,D) -> (B,J*2,D) -> (B,J*3,D) -> (B,J*4,D)
         for frame_id in range(F):
@@ -338,26 +520,182 @@ class MyTransformer(nn.Transformer):
 
         return rearrange(memory_BJsD, 'B (F J) D -> B F J D', F=F)
 
-    '''
-    def forward(self, src: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,  # ! remove tgt param
-                memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
-                tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
-                joint_embedding: Optional[Tensor] = None, serial_embedding: Optional[Tensor] = None  # ! NEW 2 embedding
-                ) -> Tensor:
-        # ! tgt is forwarded from zeros()
-        # ! old method to compute embedding
 
+    def forward(self, src,
+                joint_embedding: Optional[Tensor] = None,  # ! NEW 3 embedding, (J, C)
+                verts_embedding: Optional[Tensor] = None,  # (V, C)
+                serial_embedding: Optional[Tensor] = None,  # (F, C)
+                positional_embedding: Optional[Tensor] = None,  # (B, F, J, C)
+                DiagonalMask: Dict[str, List] = None,
+                JointConfMask: Dict[str, Any] = None,
+                ReturnEncoderOutput = 'no',
+                ):
         if src.size(-1) != self.d_model:
             raise RuntimeError("the feature number of src and tgt must be equal to d_model")
-
         B, F, J, D = src.shape  # BatchSize, FrameCounts, JointCounts, featureDim
-        src = rearrange(src, 'B F J D -> (B F) J D')  # B, Seq, Dim
+
+        serial_embedding = serial_embedding[:F, :]  # only previous F embeddings is used
+
+        # Expand ALL embeddings to (B, F, J, D)
+        if joint_embedding is not None:  # for enc_SA and dec_CA if DecOut == 49
+            joint_embedding = repeat(joint_embedding, 'J D -> B F J D', B=B, F=F)
+        if self.DecoderForwardConfigs['DecOutCount'] == '49 verts' and \
+            verts_embedding is not None:
+            verts_embedding = repeat(verts_embedding, 'V D -> B F V D', B=B, F=F)
+        # if positional_embedding is not None:             # (B F J D)
+        #     pass
+        if serial_embedding is not None:
+            serial_embedding = repeat(serial_embedding, 'F D -> B F () D', B=B)  # accept J or V
+
+        # Prepare Masking
+        ## DiagonalMask = {'enc self': ['part', 0.1], ...}
+        if DiagonalMask is None:
+            DiagonalMask = {
+                'enc self' : ['no', 0],
+                'dec self' : ['no', 0],
+                'dec cross': ['no', 0],
+            }
+        ## JointConfMask = {'mode': 'mask', 'joint mask': tensor, ...}
+        if JointConfMask is None:
+            JointConfMask = {
+                'enc self': 'no',
+                'dec cross': 'no',
+                'joint mask': None,
+                'joint conf': None,
+            }
+
+        # Enc / Dec
+        if self.Mode == 'base':
+            memory_BFJD, each_enc_out = self.forward_encoder(src,
+                joint_embedding, positional_embedding, serial_embedding,
+                DiagonalMask, JointConfMask,
+                ReturnEachEncoderLayerOutput = (ReturnEncoderOutput=='each'),
+                )
+            out = self.forward_decoder(memory_BFJD,
+                joint_embedding, positional_embedding, serial_embedding, verts_embedding,
+                DiagonalMask, JointConfMask,
+                )
+        elif self.Mode == 'encoder only':
+            #TODO: Different mask shape, No DiagMask function temporary
+            # 'B F J D -> B (F J) D'
+            # diff encoder input shape
+            # diff norm dimensions(F*J, 256)
+            out, each_enc_out = self.forward_encoder(src,
+                joint_embedding, positional_embedding, serial_embedding,
+                DiagonalMask, JointConfMask,
+                ReturnEachEncoderLayerOutput = (ReturnEncoderOutput=='each'),
+                temporal_mode=True,
+                )
+        elif self.Mode == 'decoder only':
+            out = self.forward_decoder(src,
+                joint_embedding, positional_embedding, serial_embedding, verts_embedding,
+                DiagonalMask, JointConfMask,
+                )
+
+        to_return = [out, None]
+        # main_out, (Opt)encoder out
+
+        # ['no', 'last', 'each']
+        if ReturnEncoderOutput == 'last':
+            assert self.Mode=='base', f'mode should be "base" if ReturnEncoderOutput=="last", get: {self.Mode}'
+            to_return[1] = memory_BFJD
+        elif ReturnEncoderOutput == 'each':
+            to_return[1] = each_enc_out
+
+        return to_return
+
+
+    def forward_encoder(self, src,
+                        joint_embedding, positional_embedding, serial_embedding,
+                        DiagonalMask: Dict[str, List],
+                        JointConfMask: Dict[str, Any],
+                        ReturnEachEncoderLayerOutput,
+                        temporal_mode=False):
+        ''' temporal_mode: reshape to B (F J) D, rather than (B F) F D '''
+        B, F, J, D = src.shape
+        L = self.encoder.num_layers
+        device = src.device
 
         # Encoder x_embedding
-        x_embedding = repeat(joint_embedding, 'J D -> BF J D', BF = B * F)
-        memory_BFJD = self.encoder(src, mask=src_mask, src_key_padding_mask=src_key_padding_mask,
-                              x_embedding=x_embedding)
-        memory_BFJD = rearrange(memory_BFJD, '(B F) J D -> B F J D', B=B)
+        x_embedding = None
+        x_embedding = self.combine_embed(x_embedding, joint_embedding)
+        x_embedding = self.combine_embed(x_embedding, positional_embedding) 
+        # x_embedding == None | joint_ | positional_ | joint_ + positional_
+        if temporal_mode:
+            x_embedding = self.combine_embed(x_embedding, serial_embedding)
+
+
+        # Encoder DiagMask
+        SA_diag_mask = self._prepare_diag_mask(B*F, J, _mode= DiagonalMask['enc self'][0],
+                                                       _ratio=DiagonalMask['enc self'][1], _device=device)
+        if SA_diag_mask is not None:
+            SA_diag_mask = rearrange(SA_diag_mask, '(B F) J1 J2 -> B F J1 J2', B=B)
+        # SA_diag_mask == None | (B F J J)
+        # Encoder ConfMask
+        SA_conf_joint_mask = None
+        WeightedPaddingMask = False
+        if JointConfMask['enc self'] == 'mask':
+            SA_conf_joint_mask = JointConfMask['joint mask']  # (B F J)
+        elif JointConfMask['enc self'] == 'weight':
+            SA_conf_joint_mask = JointConfMask['joint conf']  # (B F J)
+            WeightedPaddingMask = True
+
+
+        # Reshape & Forward
+        if not temporal_mode:
+            x_embedding = rearrange(x_embedding, 'B F J D -> (B F) J D')
+            src = rearrange(src, 'B F J D -> (B F) J D')  # B, Seq, Dim
+            if SA_diag_mask is not None:
+                SA_diag_mask = rearrange(SA_diag_mask, 'B F J1 J2 -> (B F) J1 J2')
+            if SA_conf_joint_mask is not None:
+                SA_conf_joint_mask = rearrange(SA_conf_joint_mask, 'B F J -> (B F) J')
+
+            memory_BFJD, mem_list = self.encoder(src,
+                                       mask=SA_diag_mask,
+                                       src_key_padding_mask=SA_conf_joint_mask,
+                                       x_embedding=x_embedding,
+                                       WeightedPaddingMask=WeightedPaddingMask,
+                                       ReturnEachLayerOutput=ReturnEachEncoderLayerOutput)
+
+            if mem_list is not None: # or if ReturnEachEncoderLayerOutput:
+                for i in range(self.encoder.num_layers):
+                    mem_list[i] = rearrange(mem_list[i], '(B F) J D -> B F J D', B=B)
+            return rearrange(memory_BFJD, '(B F) J D -> B F J D', B=B), mem_list
+
+        else:
+            x_embedding = rearrange(x_embedding, 'B F J D -> B (F J) D')
+            src = rearrange(src, 'B F J D -> B (F J) D')  # B, Seq, Dim
+            if SA_conf_joint_mask is not None:
+                SA_conf_joint_mask = rearrange(SA_conf_joint_mask, 'B F J -> B (F J)')
+
+            memory_BFJD, mem_list = self.encoder(src,
+                                       mask=None,
+                                       src_key_padding_mask=SA_conf_joint_mask,
+                                       x_embedding=x_embedding,
+                                       WeightedPaddingMask=WeightedPaddingMask,
+                                       ReturnEachLayerOutput=ReturnEachEncoderLayerOutput)
+
+            if mem_list is not None: # or if ReturnEachEncoderLayerOutput:
+                for i in range(self.encoder.num_layers):
+                    mem_list[i] = rearrange(mem_list[i], 'B (F J) D -> B F J D', F=F)
+            return rearrange(memory_BFJD, 'B (F J) D -> B F J D', F=F), mem_list
+
+
+    def forward_decoder(self, memory_BFJD,
+                        joint_embedding, positional_embedding, serial_embedding, verts_embedding,
+                        DiagonalMask: Dict[str, List],
+                        JointConfMask: Dict[str, Any]):
+        ''' Note that: ..._BFJD.shape == (B F J D), ..._BJsD.shape == (B FJ D)
+        '''
+
+        DecOutCount = self.DecoderForwardConfigs['DecOutCount']
+
+        B, F, J, D = memory_BFJD.shape
+        tgt_N = 21 if DecOutCount == '21 joint' else 49
+        # tgt_N = 49 if DecOutCount == '49 verts' else 21
+
+        L = self.decoder.num_layers
+        device = memory_BFJD.device
 
         def update_embedding(memory, appended, dim):
             if memory == None:
@@ -365,39 +703,116 @@ class MyTransformer(nn.Transformer):
             else:
                 return torch.cat((memory, appended), dim=dim)  # ([2j, j], D) or (B, [2j, j], D)
 
-        # Decoder
-        mem_embedding = None
-        memory_BJsD = None  # (B,J,D) -> (B,J*2,D) -> (B,J*3,D) -> (B,J*4,D)
+        # Decoder Embeddings
+        mem_embedding_BFJD = None
+        mem_embedding_BFJD = self.combine_embed(mem_embedding_BFJD, joint_embedding)
+        mem_embedding_BFJD = self.combine_embed(mem_embedding_BFJD, positional_embedding)
+        mem_embedding_BFJD = self.combine_embed(mem_embedding_BFJD, serial_embedding)  # (BFJD) + (BF1D)
+        # embedding_ == None | joint_ | positional_ | serial_ | combination_
+        if DecOutCount == '49 verts':
+            tgt_embedding_BFJD = None
+            tgt_embedding_BFJD = self.combine_embed(tgt_embedding_BFJD, verts_embedding)
+            tgt_embedding_BFJD = self.combine_embed(tgt_embedding_BFJD, serial_embedding)  # (BFVD) + (BF1D)
+            # no positional embed: (BFVD) <-> (BFJD)
+        elif DecOutCount == '21 joint':
+            tgt_embedding_BFJD = mem_embedding_BFJD
+
+
+        # Decoder DiagMask
+        SA_diag_mask_BFJJ = self._prepare_diag_mask(B*F, tgt_N, _mode= DiagonalMask['dec self'][0],
+                                                                _ratio=DiagonalMask['dec self'][1], _device=device)
+        CA_diag_mask_BFJJ = self._prepare_diag_mask(B*F, J,     _mode= DiagonalMask['dec cross'][0],
+                                                                _ratio=DiagonalMask['dec cross'][1], _device=device)
+        if SA_diag_mask_BFJJ is not None:
+            SA_diag_mask_BFJJ = rearrange(SA_diag_mask_BFJJ, '(B F) J1 J2 -> B F J1 J2', B=B)
+        if CA_diag_mask_BFJJ is not None:
+            CA_diag_mask_BFJJ = rearrange(CA_diag_mask_BFJJ, '(B F) J1 J2 -> B F J1 J2', B=B)
+            # needs to be appended after zero_mask if frame > 0
+        # {SA_diag_mask_BFJJ, CA_diag_mask_BFJJ} == None | (B F J J)
+
+        # Decoder ConfMask
+        mem_joint_conf_mask_BFJ = None
+        WeightedMemPaddingMask = False
+        if JointConfMask['dec cross'] == 'mask':
+            mem_joint_conf_mask_BFJ = JointConfMask['joint mask']  # (B F J)
+        elif JointConfMask['dec cross'] == 'weight':
+            mem_joint_conf_mask_BFJ = JointConfMask['joint conf']  # (B F J)
+            WeightedMemPaddingMask = True
+
+
+        ###### Prepared to enter Decoder ######
+        # Reshape embedding, mask, memory
+        mem_embedding_BJsD = rearrange(mem_embedding_BFJD, 'B F J D -> B (F J) D')
+
+        mem_conf_mask_BJs = None
+        if mem_joint_conf_mask_BFJ is not None:
+            mem_conf_mask_BJs = rearrange(mem_joint_conf_mask_BFJ, 'B F J -> B (F J)')
+        # Init
+        memory_BJsD = None  # (B,J,D) -> (B,2J,D) -> (B,3J,D)
+        if self.DecoderForwardConfigs['DecMemUpdate'] == 'full':
+            memory_BJsD = rearrange(memory_BFJD, 'B F J D -> B (F J) D')
+        output_F_BVD = []
+
+        # Iteratively predict each frame
         for frame_id in range(F):
-            # Decoder tgt_embedding
-            tgt_joint_embedding = joint_embedding
-            tgt_serial_embedding = repeat(serial_embedding[frame_id], 'D -> J D', J=J)
-            tgt_embedding = tgt_joint_embedding + tgt_serial_embedding
+            # Iterative embedding: {tgt_|mem_embedding}
+            tgt_embedding = tgt_embedding_BFJD[:, frame_id]  # (B J D) or (B V D)
+            if self.DecoderForwardConfigs['DecMemUpdate'] == 'append':
+                mem_embedding = mem_embedding_BJsD[:, : J* (frame_id+1)] # [0:J] -> [0:2J] -> [0 :3J]
+            else:
+                mem_embedding = mem_embedding_BJsD                       # (B FJ D)
 
-            # Decoder mem_embedding
-            mem_embedding = update_embedding(mem_embedding, tgt_embedding, dim=0)  # ([2J, J], D) -> (3J, D)
+            # Iterative data
+            if self.DecoderForwardConfigs['DecSrcContent'] == 'zero':
+                tgt = torch.zeros((B, tgt_N, D), device=device)
+            else:                                           # 'feature'
+                tgt = memory_BFJD[:, frame_id]
 
-            batched_tgt_embedding = repeat(tgt_embedding, 'J D -> B J D', B=B)
-            batched_mem_embedding = repeat(mem_embedding, 'J D -> B J D', B=B)
+            if self.DecoderForwardConfigs['DecMemUpdate'] == 'append':
+                memory_BJsD = update_embedding(memory_BJsD, memory_BFJD[:, frame_id], dim=1)
+            else:                                          # 'full'
+                pass  # memory_BJsD = full, no need to change
 
-            # Data
-            tgt = torch.zeros_like(batched_tgt_embedding)
-            memory_BJsD = update_embedding(memory_BJsD, memory_BFJD[:, frame_id, :, :], dim=1)
+            # Iterative diag mask
+            SA_diag_mask = CA_diag_mask = None
+            if SA_diag_mask_BFJJ is not None:  # (B F tgt_N tgt_N): (B F J J) or (B F V V)
+                SA_diag_mask = SA_diag_mask_BFJJ[:, frame_id]
+            if CA_diag_mask_BFJJ is not None:
+                CA_diag_mask = CA_diag_mask_BFJJ[:, frame_id]
+                CA_diag_mask = self._append_cross_attn_diag_mask(CA_diag_mask, frame_id, F, self.DecoderForwardConfigs['DecMemUpdate'])
+                # [\] -> [O O O \] if 'append',     [\] -> [O O O \ O O O O] if 'full'
+            # SA_diag_mask = None | (B, J, J)
+            # CA_diag_mask = None | (B, J, J * (frame+1)) | (B, J, J * F)
 
-            output = self.decoder(tgt, memory_BJsD, tgt_mask=tgt_mask, memory_mask=memory_mask,
-                                  tgt_key_padding_mask=tgt_key_padding_mask,
-                                  memory_key_padding_mask=memory_key_padding_mask,
-                                  tgt_embedding=batched_tgt_embedding, memory_embedding=batched_mem_embedding)
+            # Iterative conf joint mask
+            mem_padding_mask = None
+            if mem_conf_mask_BJs is not None:  # DecOutCount == '21 joint
+                if self.DecoderForwardConfigs['DecMemUpdate'] == 'append':
+                    mem_padding_mask = mem_conf_mask_BJs[:, : J* (frame_id+1)]
+                else:                                          # 'full'
+                    mem_padding_mask = mem_conf_mask_BJs
 
-            # update last memory, with decoder output( predict result of this frame )
-            memory_BJsD[:, J*frame_id:J*(frame_id+1), :] = output
+            # Iterative output result
+            output = self.decoder(tgt, memory_BJsD,
+                tgt_mask=SA_diag_mask, memory_mask=CA_diag_mask,
+                tgt_key_padding_mask=None, memory_key_padding_mask=mem_padding_mask,
+                tgt_embedding=tgt_embedding, memory_embedding=mem_embedding,
+                WeightedMemPaddingMask=WeightedMemPaddingMask
+            )
 
-        return rearrange(memory_BJsD, 'B (F J) D -> B F J D', F=F)
-    '''
+            # Iterative update memory
+            if self.DecoderForwardConfigs['DecMemReplace'] == True:  # DecOutCount == '21 joint'
+                memory_BJsD[:, J*frame_id: J*(frame_id+1), :] = output
+            output_F_BVD += [output]
 
-    def combine_embed(self, embed_1: Optional[Tensor], embed_2: Optional[Tensor]):
-        if embed_1 != None and embed_2 != None and embed_1.shape != embed_2.shape:
-            raise RuntimeError(f'positional embedding shape not matched, 1: {embed_1.shape}, 2: {embed_2.shape}')
+        return rearrange(output_F_BVD, 'F B J D -> B F J D')
+
+
+    def combine_embed(self, embed_1: Tensor, embed_2: Tensor):
+        # commented to accept sum(joint[BFJD], serial[BF1D]) and
+        #                     sum(verts[BFVD], serial[BF1D])
+        # if embed_1 != None and embed_2 != None and embed_1.shape != embed_2.shape:
+        #     raise RuntimeError(f'positional embedding shape not matched, 1: {embed_1.shape}, 2: {embed_2.shape}')
 
         if embed_1 == None:
             return embed_2
@@ -406,6 +821,97 @@ class MyTransformer(nn.Transformer):
         else:
             return embed_1 + embed_2
 
+    def _prepare_diag_mask(self, _counts, _joints, _mode, _device, _ratio=0.1):
+        '''
+        _counts: Batch * Frame (* Head)
+        _joints: attention mask width
+        _mode: {'no', 'part', 'full'}
+        return: Size(_counts, _joints, _joints) masks
+
+        ...
+
+        encoder self-attn
+            (BFL, J, J)
+            == (BF, J, J) for (0 ... L: layer_counts)
+        decoder self, cross
+            (BFL, J, J)
+            == (BL, J, J) for (0 ... F)
+
+            # cross = ones (cat) mask
+
+        BFL: Batch, Frame(, Head)
+        '''
+        if self.training == False:
+            return None
+        if _mode == 'no':
+            return None
+
+        elif _mode == 'part':
+            diagonal = torch.rand((_counts, _joints), device=_device) < _ratio  # (BFL, J)
+        elif _mode == 'full':
+            diagonal = torch.rand(_counts, device=_device) < _ratio  # (BFL)
+            diagonal = repeat(diagonal, 'BFL -> BFL J', J=_joints)
+        else:
+            raise Exception(f'_mode should be in ("no", "part", "full"), but got: {_mode}')
+
+        masks = torch.diag_embed(diagonal)
+        # print(masks.shape)
+        return masks
+
+    def _append_cross_attn_diag_mask(self, _diag_mask: Tensor, _frame_id: int, _max_frame=None, _DecMemUpdate: str='append'):
+        '''
+        [\] -> [O O O \], used in decoder cross-attn
+            or [O O O \ O O O O] if _DecMemUpdate=='full'
+
+        _diag_mask: Size(B, J, J) for frame in (0 ... F)
+             (X) or Size(B *H, J, J) for frame in (0 ... F), if nhead > 1
+
+        _frame_id: (0 ~ F-1) if _DecMemUpdate=='append'
+        _max_frame: (F)      if _DecMemUpdate=='full'
+
+        _DecMemUpdate: method to update memory part, 'append' or 'full'
+
+        return: mask with Size(B, J, [_frame_id *J] ) if 'append'
+                                    [O O O O \]
+        return: mask with Size(B, J, F*J)             if 'full'
+                                    [O O O \ O O O O]
+
+        Note that: only applied on joint_2_joint case
+                                no verts_2_joint case
+        '''
+        _device = _diag_mask.device
+        B, J, _ = _diag_mask.shape
+
+        if _DecMemUpdate == 'append':
+            _zeros_shape = (B, J, J * (_frame_id+1))
+        else:
+            assert _max_frame is not None, f'_max_frame should be specified(int) if _DecMemUpdate=="full", got: None'
+            _zeros_shape = (B, J, J * _max_frame)
+
+        masks = torch.zeros(_zeros_shape, device=_device, dtype=torch.bool)
+        masks[:, :, _frame_id*J : (_frame_id+1)*J] = _diag_mask  # rightest square <- diag mask
+
+        return masks
+
+
+
+def test_correctness_of_new_transformer():
+    device = torch.device('cuda:0')
+    transformer = get_transformer(
+        256, nhead=1, num_encoder_layers=3, num_decoder_layers=3,
+        norm_first=False).to(device).eval()
+
+    x = torch.randn((16, 8, 21, 256)).to(device)
+    j_emb = torch.randn((21, 256)).to(device)
+    p_emb = torch.randn((16, 8, 21, 256)).to(device)
+    s_emb = torch.randn((20, 256)).to(device)
+
+    with torch.no_grad():
+        # edit forward() to compare old_version: forward_
+        #                       and new_version
+        #                   with torch.equal(out1, out2)
+        # pass check
+        out = transformer(x, joint_embedding=j_emb, positional_embedding=p_emb, serial_embedding=s_emb)
 
 def exp_encoder():
     d_model = 128 # feature len
@@ -482,17 +988,84 @@ def exp_transformer():
     x = torch.randn((B, F, J, D)).to(device)  # B F J D
     out = transformer(x, joint_embedding=joint_embedding, serial_embedding=serial_embedding)
 
+def transformer_config_correctness_check(
+    norm_first, NormTwice,
+    Mode,
+    DecOutCount, DecSrcContent, DecMemUpdate, DecMemReplace,
+    ):
+    ErrorMessages = []
+
+    InputDict = {
+        'norm_first': norm_first,
+        'NormTwice': NormTwice,
+        'Mode': Mode,
+        'DecOutCount': DecOutCount,
+        'DecSrcContent': DecSrcContent,
+        'DecMemUpdate': DecMemUpdate,
+        'DecMemReplace': DecMemReplace,
+    }
+
+    PossibleConfigs = {
+        'norm_first':       [True, False],
+        'NormTwice':        [True, False],
+        'Mode':             ['base', 'encoder only', 'decoder only'],
+        'DecOutCount':      ['21 joint', '49 verts'],
+        'DecSrcContent':    ['zero', 'feature'],
+        'DecMemUpdate':     ['append', 'full'],
+        'DecMemReplace':    [True, False],
+    }
+
+    # All config contents should be in list
+    for key, value in InputDict.items():
+        if value not in PossibleConfigs[key]:
+            ErrorMessages += [f'{key} should be in {PossibleConfigs[key]}, got {key}: {value}']
+
+    # Configs Conflict
+    ## NormTwice, norm_first
+    if NormTwice == True:
+        if norm_first != False:
+            ErrorMessages += [f'norm_first should be True while NormFirst == True, got norm_first: {norm_first}']
+
+    ## Decoder configs
+    if DecMemReplace == True:
+        if DecOutCount != '21 joint':
+            ErrorMessages += [f'DecOutCount should be "21 joint" while DecMemReplace == True, got DecOutCount: {DecOutCount}']
+    if DecSrcContent == 'feature':
+        if DecOutCount != '21 joint':
+            ErrorMessages += [f'DecOutCount should be "21 joint" while DecSrcContent == "feature", got DecOutCount: {DecOutCount}']
+
+    if ErrorMessages != []:
+        print('[Config Error]')
+        for err_msg in ErrorMessages:
+            print(err_msg)
+        raise Exception('transformer configs conflict, printed')
+
 def get_transformer(d_model, nhead, num_encoder_layers, num_decoder_layers,
-                    layer_norm_eps=1e-5
-                    ):
-    encoder_layer = MyEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+                    layer_norm_eps=1e-5, norm_first=False,
+                    NormTwice=False,
+                    Mode: Optional[str]='base',
+                    DecoderForwardConfigs: Optional[dict]=None,
+                    ) -> MyTransformer:
+    if DecoderForwardConfigs is None:
+        DecoderForwardConfigs = {
+            'DecOutCount': '21 joint',
+            'DecSrcContent': 'zero',
+            'DecMemUpdate': 'append',
+            'DecMemReplace': True,
+        }
+    transformer_config_correctness_check(norm_first=norm_first, NormTwice=NormTwice, Mode=Mode,
+                                         **DecoderForwardConfigs)
+
+    encoder_layer = MyEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True, norm_first=norm_first, NormTwice=NormTwice)
                                  # dim_feedforward=2048, dropout=0.1, layer_norm_eps=layer_norm_eps
     encoder_norm = nn.LayerNorm(d_model, eps=layer_norm_eps)  # final norm in encoder
+    # encoder_norm = nn.LayerNorm((21, d_model), eps=layer_norm_eps)  # final norm in encoder
     encoder = MyEncoder(encoder_layer=encoder_layer, num_layers=num_encoder_layers, norm=encoder_norm)
 
-    decoder_layer = MyDecoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+    decoder_layer = MyDecoderLayer(d_model=d_model, nhead=nhead, batch_first=True, norm_first=norm_first, NormTwice=NormTwice)
                                  # dim_feedforward=2048, dropout=0.1, layer_norm_eps=layer_norm_eps
     decoder_norm = nn.LayerNorm(d_model, eps=layer_norm_eps)  # final norm in decoder
+    # decoder_norm = nn.LayerNorm((21, d_model), eps=layer_norm_eps)  # final norm in decoder
     decoder = MyDecoder(decoder_layer=decoder_layer, num_layers=num_decoder_layers, norm=decoder_norm)
 
     transformer = MyTransformer(
@@ -501,7 +1074,9 @@ def get_transformer(d_model, nhead, num_encoder_layers, num_decoder_layers,
         # dim_feedforward=2048, dropout=0.1,
         custom_encoder=encoder, custom_decoder=decoder,
         # layer_norm_eps=layer_norm_eps,
-        batch_first=True
+        batch_first=True,
+        Mode=Mode,
+        DecoderForwardConfigs=DecoderForwardConfigs,
     )
     return transformer
 
