@@ -598,7 +598,7 @@ class MyTransformer(nn.Transformer):
         # ['no', 'last', 'each']
         if ReturnEncoderOutput == 'last':
             assert self.Mode=='base', f'mode should be "base" if ReturnEncoderOutput=="last", get: {self.Mode}'
-            to_return[1] = memory_BFJD
+            to_return[1] = [memory_BFJD]
         elif ReturnEncoderOutput == 'each':
             to_return[1] = each_enc_out
 
@@ -657,8 +657,8 @@ class MyTransformer(nn.Transformer):
                                        WeightedPaddingMask=WeightedPaddingMask,
                                        ReturnEachLayerOutput=ReturnEachEncoderLayerOutput)
 
-            if mem_list is not None: # or if ReturnEachEncoderLayerOutput:
-                for i in range(self.encoder.num_layers):
+            if mem_list != []: # or if ReturnEachEncoderLayerOutput:
+                for i in range(len(mem_list)):
                     mem_list[i] = rearrange(mem_list[i], '(B F) J D -> B F J D', B=B)
             return rearrange(memory_BFJD, '(B F) J D -> B F J D', B=B), mem_list
 
@@ -675,8 +675,8 @@ class MyTransformer(nn.Transformer):
                                        WeightedPaddingMask=WeightedPaddingMask,
                                        ReturnEachLayerOutput=ReturnEachEncoderLayerOutput)
 
-            if mem_list is not None: # or if ReturnEachEncoderLayerOutput:
-                for i in range(self.encoder.num_layers):
+            if mem_list != []: # or if ReturnEachEncoderLayerOutput:
+                for i in range(len(mem_list)):
                     mem_list[i] = rearrange(mem_list[i], 'B (F J) D -> B F J D', F=F)
             return rearrange(memory_BFJD, 'B (F J) D -> B F J D', F=F), mem_list
 

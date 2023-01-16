@@ -309,6 +309,7 @@ class SequencialReg2DDecode3D(nn.Module):
         # joint predictor
         pred_joint = []
         # pred_joint = [self.joint_head(x)]
+        assert isinstance(enc_x, list), 'enc_x should be list'
         if enc_x != []:  # ReturnEncoderOutput != 'no'
             for enc_i in enc_x:
                 pred_joint += [self.joint_head(rearrange(enc_i, 'B F J D -> (B F) J D'))]
