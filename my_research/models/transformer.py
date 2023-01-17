@@ -592,7 +592,7 @@ class MyTransformer(nn.Transformer):
                 DiagonalMask, JointConfMask,
                 )
 
-        to_return = [out, None]
+        to_return = [out, []]
         # main_out, (Opt)encoder out
 
         # ['no', 'last', 'each']
