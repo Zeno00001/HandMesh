@@ -121,12 +121,24 @@ class HanCo(data.Dataset):
 
         self.hanco_root = self.cfg.DATA.HANCO.ROOT
 
-        self.train_seq, self.test_seq = self._get_valid_sequence(
-            hanco_root=self.hanco_root, DEBUG=False
-        )
-        # ! split train_seq into {train_seq, valid_seq}
-        np.random.seed(0)
-        self.train_seq, self.valid_seq = self._split_train_valid(self.train_seq, ratio=0.03)  # 583:237592
+        split_info_path = os.path.join(self.hanco_root, 'dataset_split_info.npz')
+        if os.path.isfile(split_info_path):
+            split_info = np.load(split_info_path)
+            self.train_seq, self.valid_seq, self.test_seq, self.valid_seq_start_frame = \
+                list(split_info['train_seq']), list(split_info['valid_seq']), \
+                list(split_info['test_seq']), list(split_info['valid_seq_start_frame'])
+        else:
+            self.train_seq, self.test_seq = self._get_valid_sequence(
+                hanco_root=self.hanco_root, DEBUG=False
+            )
+            # ! split train_seq into {train_seq, valid_seq}
+            np.random.seed(0)
+            self.train_seq, self.valid_seq = self._split_train_valid(self.train_seq, ratio=0.03)  # 583:237592
+            self.valid_seq_start_frame = self._get_valid_seq_start_frame(self.valid_seq)
+            np.savez(split_info_path, train_seq=self.train_seq, valid_seq=self.valid_seq,
+                test_seq=self.test_seq, valid_seq_start_frame=self.valid_seq_start_frame,
+                frame_count=self.frame_counts, ratio=0.03)
+
         self.len_train_seq_cam = len(self.train_seq) * 8  # (sequence X cam) counts of all augment folders
         self.len_valid_seq_cam = len(self.valid_seq) * 8
 
@@ -221,6 +233,26 @@ class HanCo(data.Dataset):
         train_seq = train_seq[:-valid_size]
         return sorted(train_seq), sorted(valid_seq)
 
+    def _get_valid_seq_start_frame(self, valid_seq):
+        ''' min seq len = 23 '''
+        valid_seq_start = []
+        for seq_id in valid_seq:
+            max_seq_length = len(os.listdir(
+                os.path.join(self.hanco_root, 'rgb', f'{seq_id:04d}', 'cam0')
+            ))
+            start = np.random.randint(
+                max_seq_length // 3, max_seq_length -self.frame_counts +1,
+                size=5 * 8
+            )   # 5 * seq_count * cam_count:8
+            # from (1/3) len to end
+            # min case: 6 ~ 23
+            valid_seq_start += [start]
+        from einops import rearrange
+        # shape: (5*8, seq_count)
+        valid_seq_start = rearrange(valid_seq_start,
+            'Seq (IA Cam) -> (IA Seq Cam)', IA=5)  # IA: Image augment folders
+        return list(valid_seq_start)
+
     def __len__(self):
         if self.phase == 'train':
             return len(self.image_aug) * len(self.train_seq) * 8
@@ -241,7 +273,8 @@ class HanCo(data.Dataset):
                 raise Exception(f'--- [Error] at {self.phase}: data[{idx}] --- aug: {aug_id}, seq: {seq_id}, cam: {cam_id}')
         elif self.phase == 'valid':
             aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
-            return self.get_training_sample(aug_id, seq_id, cam_id)
+            return self.get_training_sample(aug_id, seq_id, cam_id,
+                        start=self.valid_seq_start_frame[idx])  # valid_start = shape(IA Seq Cam)
         elif self.phase == 'test':
             seq_id, cam_id = self._inverse_compute_index(idx)
             return self.get_testing_sample(seq_id, cam_id)
@@ -276,9 +309,12 @@ class HanCo(data.Dataset):
             cam_id = idx % 8
             return seq_id, cam_id
 
-    def get_training_sample(self, aug_id, seq_id, cam_id):
+    def get_training_sample(self, aug_id, seq_id, cam_id, start=None):
         ''' Get HanCo sequence, see details at top - FORMAT
             with frame counts: self.frame_counts
+
+            start: Optional[int], pre-defined start frames
+                                  uses in valid-set
         '''
         # _ = f'{seq_id:04d}', f'cam{cam_id}', f'{frame_id:08d}'
 
@@ -288,8 +324,11 @@ class HanCo(data.Dataset):
         ))
 
         # get sequence: [start, ..., start+self.frame_counts -1][ ... ]
-        start = np.random.randint(0, max_seq_length -self.frame_counts +1)
-        # 20, 10 -> start(0, 11) -> [0, ..., 9], [10, ..., 19]
+        if start is None:
+            start = np.random.randint(0, max_seq_length -self.frame_counts +1)
+            # len:20, frames:10 -> start(0, 11) -> [0, ..., 9], [10, ..., 19]
+        assert start + self.frame_counts <= max_seq_length, \
+            f'start frame too large with frame_count={self.frame_counts}, ({start} / {max_seq_length})'
 
         # read images, masks
         images, masks = [], []
