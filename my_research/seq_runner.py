@@ -76,7 +76,7 @@ class Runner(object):
                     self.writer.save_checkpoint(self.model, self.optimizer, None, self.epoch, best=True)
                     self.best_test_loss = val_loss
                 self.writer.save_checkpoint(self.model, self.optimizer, None, self.epoch, last=True)
-            self.pred()
+            # self.pred()
         elif self.cfg.PHASE == 'eval':
             self.eval()
         elif self.cfg.PHASE == 'pred':
@@ -168,6 +168,7 @@ class Runner(object):
             data = self.phrase_data(data)  # to('GPU')
             self.optimizer.zero_grad()
             out = self.model(data['img'])
+            # self.draw_eval_results(self._reshape_BF_to_B(data), self._reshape_BF_to_B(out))
             tf = time.time()
             forward_time += tf - ts
             losses = self.loss(verts_pred=out.get('verts'),
@@ -252,6 +253,22 @@ class Runner(object):
                 raise RuntimeError(f'len(shape) out of range: {shape}')
         return out
 
+    def draw_eval_results(self, data, out, mpjpe=None, pampjpe=None):
+        ''' draw image of shape: (128 * F, 512, 3)
+            data, out: (1xF, ...) '''
+        imgs = []
+        for i in range(8):
+            imgs += [self.draw_results(data, out, {}, i)]  # (128, 512, 3)
+        imgs = rearrange(imgs, 'F H W D -> (F H) W D')
+        from matplotlib import pyplot as plt
+        mpjpe = None if mpjpe is None else ' |'.join(f'{e.mean(): 6.2f}' for e in mpjpe)
+        pampjpe = None if pampjpe is None else ' |'.join(f'{e.mean(): 6.2f}' for e in pampjpe)
+        mpjpe = f'mpjpe: {mpjpe}' if mpjpe is not None else 'mpjpe: Nope'
+        pampjpe = f'pampjpe: {pampjpe}' if pampjpe is not None else 'pampjpe: Nope'
+        plt.imshow(imgs)
+        plt.title(mpjpe + '\n' + pampjpe)
+        plt.show()
+
     def eval(self):
         self.writer.print_str('EVALING ... Epoch {}/{}'.format(self.epoch, self.max_epochs))
         self.model.eval()
@@ -269,6 +286,7 @@ class Runner(object):
                 # get data then infernce
                 data = self.phrase_data(data)
                 out = self.model(data['img'])
+                # self.draw_eval_results(self._reshape_BF_to_B(data), self._reshape_BF_to_B(out))
                 for frame_id in range(out['verts'].shape[1]):
                     # get vertex pred
                     verts_pred = out['verts'][0][frame_id].cpu().numpy() * 0.2  # batch:0, frame: frame_id
@@ -304,6 +322,7 @@ class Runner(object):
                     joint_cam_errors.append(np.sqrt(np.sum((joint_cam_pred - joint_cam_gt) ** 2, axis=1)))
                     pa_joint_cam_errors.append(np.sqrt(np.sum((joint_cam_gt - joint_cam_align) ** 2, axis=1)))
                     joint_img_errors.append(np.sqrt(np.sum((data['joint_img'][0][frame_id].cpu().numpy()*data['img'].size(2+1) - joint_img_pred) ** 2, axis=1)))
+                # self.draw_eval_results(self._reshape_BF_to_B(data), self._reshape_BF_to_B(out), joint_cam_errors[-8:], pa_joint_cam_errors[-8:])
 
             # get auc
             _1, _2, _3, auc_rel, pck_curve_rel, thresholds2050 = evaluator_rel.get_measures(20, 50, 20)
