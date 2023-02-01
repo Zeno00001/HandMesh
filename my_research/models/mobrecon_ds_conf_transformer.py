@@ -194,11 +194,11 @@ class SequencialReg2DDecode3D(nn.Module):
 
             # in Decoder
             DecoderForwardConfigs = {
-                'DecMemUpdate': 'append',   # ['append', 'full']
+                'DecMemUpdate': 'full',   # ['append', 'full']
                 'DecMemReplace': True,      # [True, False]
-                'DecOutCount': '21 joint',  # ['21 joint', '49 verts']
-                'DecSrcContent': 'zero', # ['zero', 'feature']
-            },
+                'DecOutCount': '21 + 49',  # ['21 joint', '49 verts', '21 + 49']
+                'DecSrcContent': 'feature', # ['zero', 'feature']
+            },  # TODO: error occur while DecSrcContent ==  'feature && mode='decoder only'
             )
         # self.feature_norm = nn.LayerNorm((21, self.latent_size), eps=1e-5)
         self.feature_norm = nn.LayerNorm(self.latent_size, eps=1e-5)
@@ -288,6 +288,7 @@ class SequencialReg2DDecode3D(nn.Module):
         x = rearrange(x, '(B F) J D -> B F J D', F=frame_len)  # ! new
         x = self.feature_norm(x)  # norm (B, features)
 
+        J = x.shape[2]
         x, enc_x = self.transformer(x, joint_embedding=self.joint_embed.weight, verts_embedding=self.verts_embed.weight,
                                     serial_embedding=self.serial_embed.weight, positional_embedding=uv_embed,
                     DiagonalMask = { # mode ,   p
@@ -301,18 +302,27 @@ class SequencialReg2DDecode3D(nn.Module):
                         'joint mask': padding_mask, # [padding_mask, None], (B F J)
                         'joint conf': conf,         # [None,         conf], (B F J)
                     },
-                    ReturnEncoderOutput='each'      # ['no', 'last', 'each']
+                    ReturnEncoderOutput='last'      # ['no', 'last', 'each']
                                                     # =='last', only if Mode=='base
                     )
-        x = rearrange(x, 'B F J D -> (B F) J D')  # J or V
+        x = rearrange(x, 'B F J D -> (B F) J D')  # J or V or J+V
+        assert isinstance(enc_x, list), 'enc_x should be list'
+        for i in range(len(enc_x)):
+            enc_x[i] = rearrange(enc_x[i], 'B F J D -> (B F) J D')
+
+        # separate joint, verts form out
+        if self.transformer.DecoderForwardConfigs['DecOutCount'] == '21 + 49':
+            out_joint = x[:, :J]
+            out_verts = x[:, J:]
+            x = out_verts
 
         # joint predictor
         pred_joint = []
-        # pred_joint = [self.joint_head(x)]
-        assert isinstance(enc_x, list), 'enc_x should be list'
+        # pred_joint = [self.joint_head(x)]             # decoder out
         if enc_x != []:  # ReturnEncoderOutput != 'no'
-            for enc_i in enc_x:
-                pred_joint += [self.joint_head(rearrange(enc_i, 'B F J D -> (B F) J D'))]
+            for enc_i in enc_x:                         # encoder out
+                pred_joint += [self.joint_head(enc_i)]
+        # pred_joint = [self.joint_head(out_joint)]       # decoder out, DecOutCount == J+V
 
 
         # 21joint to 49 verts

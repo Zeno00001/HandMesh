@@ -571,7 +571,7 @@ class MyTransformer(nn.Transformer):
                 DiagonalMask, JointConfMask,
                 ReturnEachEncoderLayerOutput = (ReturnEncoderOutput=='each'),
                 )
-            out = self.forward_decoder(memory_BFJD,
+            out = self.forward_decoder(memory_BFJD.clone(),
                 joint_embedding, positional_embedding, serial_embedding, verts_embedding,
                 DiagonalMask, JointConfMask,
                 )
@@ -587,7 +587,7 @@ class MyTransformer(nn.Transformer):
                 temporal_mode=True,
                 )
         elif self.Mode == 'decoder only':
-            out = self.forward_decoder(src,
+            out = self.forward_decoder(src.clone(),
                 joint_embedding, positional_embedding, serial_embedding, verts_embedding,
                 DiagonalMask, JointConfMask,
                 )
@@ -602,7 +602,7 @@ class MyTransformer(nn.Transformer):
         elif ReturnEncoderOutput == 'each':
             to_return[1] = each_enc_out
 
-        return to_return
+        return to_return  # return BFJD or BFVD or BF(J+V)D
 
 
     def forward_encoder(self, src,
@@ -691,8 +691,11 @@ class MyTransformer(nn.Transformer):
         DecOutCount = self.DecoderForwardConfigs['DecOutCount']
 
         B, F, J, D = memory_BFJD.shape
-        tgt_N = 21 if DecOutCount == '21 joint' else 49
-        # tgt_N = 49 if DecOutCount == '49 verts' else 21
+        V = 49
+        # tgt_N = 21 if DecOutCount == '21 joint' else 49
+        tgt_N = 49  if DecOutCount == '49 verts' else \
+                J   if DecOutCount == '21 joint' else \
+                J+V if DecOutCount == '21 + 49'  else -1
 
         L = self.decoder.num_layers
         device = memory_BFJD.device
@@ -709,13 +712,17 @@ class MyTransformer(nn.Transformer):
         mem_embedding_BFJD = self.combine_embed(mem_embedding_BFJD, positional_embedding)
         mem_embedding_BFJD = self.combine_embed(mem_embedding_BFJD, serial_embedding)  # (BFJD) + (BF1D)
         # embedding_ == None | joint_ | positional_ | serial_ | combination_
-        if DecOutCount == '49 verts':
+        if DecOutCount in ('49 verts', '21 + 49'):
             tgt_embedding_BFJD = None
             tgt_embedding_BFJD = self.combine_embed(tgt_embedding_BFJD, verts_embedding)
             tgt_embedding_BFJD = self.combine_embed(tgt_embedding_BFJD, serial_embedding)  # (BFVD) + (BF1D)
             # no positional embed: (BFVD) <-> (BFJD)
         elif DecOutCount == '21 joint':
             tgt_embedding_BFJD = mem_embedding_BFJD
+        if DecOutCount == '21 + 49':
+            # combine mem_embed(joint embed) and tgt embed(verts embed)
+            tgt_embedding_BFJD = \
+                torch.cat([mem_embedding_BFJD, tgt_embedding_BFJD], dim=2)  # J and V in (BFJD, BFVD)
 
 
         # Decoder DiagMask
@@ -738,7 +745,8 @@ class MyTransformer(nn.Transformer):
         elif JointConfMask['dec cross'] == 'weight':
             mem_joint_conf_mask_BFJ = JointConfMask['joint conf']  # (B F J)
             WeightedMemPaddingMask = True
-
+        # TODO, check if DecOutCount == '21 + 49' have "NO" effect to mem_joint_conf_mask_BFJ
+        # attn.key = 21x
 
         ###### Prepared to enter Decoder ######
         # Reshape embedding, mask, memory
@@ -756,7 +764,7 @@ class MyTransformer(nn.Transformer):
         # Iteratively predict each frame
         for frame_id in range(F):
             # Iterative embedding: {tgt_|mem_embedding}
-            tgt_embedding = tgt_embedding_BFJD[:, frame_id]  # (B J D) or (B V D)
+            tgt_embedding = tgt_embedding_BFJD[:, frame_id]  # (B J D) or (B V D) or (B J+V D)
             if self.DecoderForwardConfigs['DecMemUpdate'] == 'append':
                 mem_embedding = mem_embedding_BJsD[:, : J* (frame_id+1)] # [0:J] -> [0:2J] -> [0 :3J]
             else:
@@ -766,7 +774,11 @@ class MyTransformer(nn.Transformer):
             if self.DecoderForwardConfigs['DecSrcContent'] == 'zero':
                 tgt = torch.zeros((B, tgt_N, D), device=device)
             else:                                           # 'feature'
-                tgt = memory_BFJD[:, frame_id]
+                if DecOutCount == '21 + 49':
+                    tgt = torch.zeros((B, tgt_N, D), device=device)
+                    tgt[:, :21] = memory_BFJD[:, frame_id]  # [feature, zero]
+                else:
+                    tgt = memory_BFJD[:, frame_id]
 
             if self.DecoderForwardConfigs['DecMemUpdate'] == 'append':
                 memory_BJsD = update_embedding(memory_BJsD, memory_BFJD[:, frame_id], dim=1)
@@ -801,8 +813,11 @@ class MyTransformer(nn.Transformer):
             )
 
             # Iterative update memory
-            if self.DecoderForwardConfigs['DecMemReplace'] == True:  # DecOutCount == '21 joint'
-                memory_BJsD[:, J*frame_id: J*(frame_id+1), :] = output
+            if self.DecoderForwardConfigs['DecMemReplace'] == True:  # DecOutCount in ('21 joint', '21 + 49')
+                if DecOutCount == '21 + 49':
+                    memory_BJsD[:, J*frame_id: J*(frame_id+1), :] = output[:, :21, :]  # (B J+V D)
+                else:
+                    memory_BJsD[:, J*frame_id: J*(frame_id+1), :] = output
             output_F_BVD += [output]
 
         return rearrange(output_F_BVD, 'F B J D -> B F J D')
@@ -1009,7 +1024,7 @@ def transformer_config_correctness_check(
         'norm_first':       [True, False],
         'NormTwice':        [True, False],
         'Mode':             ['base', 'encoder only', 'decoder only'],
-        'DecOutCount':      ['21 joint', '49 verts'],
+        'DecOutCount':      ['21 joint', '49 verts', '21 + 49'],
         'DecSrcContent':    ['zero', 'feature'],
         'DecMemUpdate':     ['append', 'full'],
         'DecMemReplace':    [True, False],
@@ -1028,11 +1043,11 @@ def transformer_config_correctness_check(
 
     ## Decoder configs
     if DecMemReplace == True:
-        if DecOutCount != '21 joint':
-            ErrorMessages += [f'DecOutCount should be "21 joint" while DecMemReplace == True, got DecOutCount: {DecOutCount}']
+        if DecOutCount not in ('21 joint', '21 + 49'):
+            ErrorMessages += [f'DecOutCount should be "21 joint" or "21 + 49" while DecMemReplace == True, got DecOutCount: {DecOutCount}']
     if DecSrcContent == 'feature':
-        if DecOutCount != '21 joint':
-            ErrorMessages += [f'DecOutCount should be "21 joint" while DecSrcContent == "feature", got DecOutCount: {DecOutCount}']
+        if DecOutCount not in ('21 joint', '21 + 49'):
+            ErrorMessages += [f'DecOutCount should be "21 joint" or "21 + 49" while DecSrcContent == "feature", got DecOutCount: {DecOutCount}']
 
     if ErrorMessages != []:
         print('[Config Error]')
