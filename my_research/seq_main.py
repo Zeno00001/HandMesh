@@ -122,7 +122,12 @@ def main(args):
                 model_path = osp.join(args.out_dir, '..', args.check_exp,
                                       'checkpoints', cfg.MODEL.RESUME)
             checkpoint = torch.load(model_path, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            # model.load_state_dict(checkpoint['model_state_dict'])
+            missing, unexpected = model.load_state_dict(
+                checkpoint['model_state_dict'], strict=False
+            )
+            print(f'missing    params: {chr(10).join(missing)}')  # chr(10) == '\n'
+            print(f'unexpected params: {chr(10).join(unexpected)}')
             print(f'Eval model in {model_path}, with dataset: {cfg.VAL.DATASET}')
     else:
         input('[ERROR] wrong cfg PHASE while loading model')
