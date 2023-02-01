@@ -13,7 +13,7 @@ from matplotlib import pyplot as plt
 from torch import Tensor
 from typing import Optional, Union, Callable, Any, Dict, List
 
-CHECK_W = True
+CHECK_W = False
 
 def show_attn(attn):
     # attn.shape: (B, J, J)
