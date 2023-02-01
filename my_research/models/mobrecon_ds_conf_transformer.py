@@ -192,25 +192,25 @@ class SequencialReg2DDecode3D(nn.Module):
         _DF = 'FX49F'
         self.transformer = get_transformer(
             self.latent_size, nhead=1, num_encoder_layers=int(_ARCH[1]), num_decoder_layers=int(_ARCH[2]),
-            norm_first=True     if _NORM == 'first' else False,
-            NormTwice=True      if _NORM == 'twice' else False,
-            Mode='base'         if _ARCH[0] == 'b' else
-                 'decoder only' if _ARCH[0] == 'd' else
-                 'encoder only' if _ARCH[0] == 'e' else 'error',
+            norm_first=   True  if _NORM == 'first' else False,
+            NormTwice=    True  if _NORM == 'twice' else False,
+            Mode=        'base' if _ARCH[0] == 'b'  else
+                 'decoder only' if _ARCH[0] == 'd'  else
+                 'encoder only' if _ARCH[0] == 'e'  else 'error',
             # norm_first=False,       # norm first to normalize joint features
             # NormTwice=True,         # norm_first should be False
             # Mode='base',            # ['base', 'encoder only', 'decoder only']
 
             # in Decoder
             DecoderForwardConfigs = {
-                'DecMemUpdate': 'append'    if _DF[0] == 'A' else
-                                'full'      if _DF[0] == 'F' else 'error',   # ['append', 'full']
-                'DecMemReplace': True       if _DF[1] == 'R' else False,      # [True, False]
-                'DecOutCount': '21 joint' if _DF[2:4] == '21' else 
-                               '49 verts' if _DF[2:4] == '49' else
-                               '21 + 49'  if _DF[2:4] == '70' else 'error',  # ['21 joint', '49 verts', '21 + 49']
-                'DecSrcContent': 'zero'     if _DF[4] == 'Z' else
-                                 'feature'  if _DF[4] == 'F' else 'error', # ['zero', 'feature']
+                'DecMemUpdate':   'append' if _DF[0  ] == 'A'  else
+                                    'full' if _DF[0  ] == 'F'  else 'error', # ['append', 'full']
+                'DecMemReplace':     True  if _DF[1  ] == 'R'  else  False,  # [True, False]
+                'DecOutCount':  '21 joint' if _DF[2:4] == '21' else 
+                                '49 verts' if _DF[2:4] == '49' else
+                                 '21 + 49' if _DF[2:4] == '70' else 'error', # ['21 joint', '49 verts', '21 + 49']
+                'DecSrcContent':    'zero' if _DF[4  ] == 'Z'  else
+                                 'feature' if _DF[4  ] == 'F'  else 'error', # ['zero', 'feature']
                 # 'DecMemUpdate': 'full',   # ['append', 'full']
                 # 'DecMemReplace': True,      # [True, False]
                 # 'DecOutCount': '21 + 49',  # ['21 joint', '49 verts', '21 + 49']
