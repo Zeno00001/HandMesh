@@ -13,7 +13,7 @@ from matplotlib import pyplot as plt
 from torch import Tensor
 from typing import Optional, Union, Callable, Any, Dict, List
 
-CHECK_W = False
+CHECK_W = True
 
 def show_attn(attn):
     # attn.shape: (B, J, J)
@@ -773,17 +773,21 @@ class MyTransformer(nn.Transformer):
                 mem_embedding = mem_embedding_BJsD                       # (B FJ D)
 
             # Iterative data
-            if self.DecoderForwardConfigs['DecSrcContent'] == 'zero':
+            if self.DecoderForwardConfigs['DecSrcContent'] == 'zero': # <- 21/ 49/ 70
                 tgt = torch.zeros((B, tgt_N, D), device=device)
-            else:                                           # 'feature'
+            elif self.DecoderForwardConfigs['DecSrcContent'] == 'feature': # <- 21/ 49
                 if DecOutCount == '21 joint':
                     tgt = memory_BFJD[:, frame_id]
                 elif DecOutCount == '49 verts':
                     tgt = torch.bmm(self.matrix.repeat(B, 1, 1), memory_BFJD[:, frame_id])  # (B 49 21) @ (B J D)
-                elif DecOutCount == '21 + 49':
-                    # TODO: seperate joint- Z/F and verts- Z/F
-                    tgt = torch.zeros((B, tgt_N, D), device=device)
-                    tgt[:, :21] = memory_BFJD[:, frame_id]  # [feature, zero]
+            else:
+                assert DecOutCount == '21 + 49', f'DecOutCount must be 70 while DecSrcContent == {self.DecoderForwardConfigs["DecSrcContent"]}'
+                _joint_content, _verts_content = self.DecoderForwardConfigs['DecSrcContent'].split()
+                tgt = torch.zeros((B, tgt_N, D), device=device)
+                if _joint_content == 'feature':
+                    tgt[:, :J] = memory_BFJD[:, frame_id]  # [feature, zero]
+                if _verts_content == 'feature':
+                    tgt[:, J:] = torch.bmm(self.matrix.repeat(B, 1, 1), memory_BFJD[:, frame_id])
 
             if self.DecoderForwardConfigs['DecMemUpdate'] == 'append':
                 memory_BJsD = update_embedding(memory_BJsD, memory_BFJD[:, frame_id], dim=1)
@@ -1031,7 +1035,9 @@ def transformer_config_correctness_check(
         'NormTwice':        [True, False],
         'Mode':             ['base', 'encoder only', 'decoder only'],
         'DecOutCount':      ['21 joint', '49 verts', '21 + 49'],
-        'DecSrcContent':    ['zero', 'feature'],
+        'DecSrcContent':    ['zero', 'feature',
+                             'zero zero',    'feature zero',
+                             'zero feature', 'feature feature'],
         'DecMemUpdate':     ['append', 'full'],
         'DecMemReplace':    [True, False],
     }
@@ -1061,6 +1067,13 @@ def transformer_config_correctness_check(
             elif not matrix.shape == (49, 21):
                 ErrorMessages += [f'"matrix.shape" must be (49, 21) while DecSrcContent == "feature" & DecOutCount == "49 verts", ' + \
                                   f'got: {matrix.shape}']
+    if DecOutCount == '21 + 49':
+        if len(DecSrcContent.split()) != 2:
+            ErrorMessages += [f'DecSrcContent should have 2 (zero/feature)s while DecOutCount == "21 + 49", got: {DecSrcContent}']
+    else:
+        if len(DecSrcContent.split()) != 1:
+            ErrorMessages += [f'DecSrcContent should have only 1 (zero/feature) while DecOutCount in "21 joint" or "49 verts", ' + \
+                              f'got: {DecSrcContent}']
 
     if ErrorMessages != []:
         print('[Config Error]')

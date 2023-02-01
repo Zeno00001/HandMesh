@@ -189,7 +189,7 @@ class SequencialReg2DDecode3D(nn.Module):
         # ! EDIT model parameters here
         _ARCH = 'b33'  # b/d/e: base/ de/encoder only, 33: enc & dec layer counts
         _NORM = 'twice'  #  ['twice', 'once', 'first'], once/twice-> norm_last
-        _DF = 'FX49F'
+        _DF = 'FR70FF'
         self.transformer = get_transformer(
             self.latent_size, nhead=1, num_encoder_layers=int(_ARCH[1]), num_decoder_layers=int(_ARCH[2]),
             norm_first=   True  if _NORM == 'first' else False,
@@ -204,13 +204,18 @@ class SequencialReg2DDecode3D(nn.Module):
             # in Decoder
             DecoderForwardConfigs = {
                 'DecMemUpdate':   'append' if _DF[0  ] == 'A'  else
-                                    'full' if _DF[0  ] == 'F'  else 'error', # ['append', 'full']
-                'DecMemReplace':     True  if _DF[1  ] == 'R'  else  False,  # [True, False]
+                                    'full' if _DF[0  ] == 'F'  else 'error',  # ['append', 'full']
+                'DecMemReplace':     True  if _DF[1  ] == 'R'  else  False,   # [True, False]
                 'DecOutCount':  '21 joint' if _DF[2:4] == '21' else 
                                 '49 verts' if _DF[2:4] == '49' else
-                                 '21 + 49' if _DF[2:4] == '70' else 'error', # ['21 joint', '49 verts', '21 + 49']
-                'DecSrcContent':    'zero' if _DF[4  ] == 'Z'  else
-                                 'feature' if _DF[4  ] == 'F'  else 'error', # ['zero', 'feature']
+                                 '21 + 49' if _DF[2:4] == '70' else 'error',  # ['21 joint', '49 verts', '21 + 49']
+                'DecSrcContent': (  'zero' if _DF[4  ] == 'Z'  else
+                                 'feature' if _DF[4  ] == 'F'  else 'error') + \
+                                (       '' if _DF[2:4] != '70' else
+                                   ' zero' if _DF[5  ] == 'Z'  else
+                                ' feature' if _DF[5  ] == 'F'  else 'error'), # ['zero', 'feature']
+                # ? 奇怪的作法，但有效: 若是 DF 70，就往後加 zero/ feature
+
                 # 'DecMemUpdate': 'full',   # ['append', 'full']
                 # 'DecMemReplace': True,      # [True, False]
                 # 'DecOutCount': '21 + 49',  # ['21 joint', '49 verts', '21 + 49']
