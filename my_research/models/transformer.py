@@ -346,6 +346,7 @@ class MyTransformer(nn.Transformer):
                  device=None, dtype=None,
                  Mode: Optional[str]='base',
                  DecoderForwardConfigs: Optional[dict]=None,
+                 matrix: Optional[nn.Parameter]=None,
                  ) -> None:
         super().__init__(d_model, nhead, num_decoder_layers, num_decoder_layers,
                          dim_feedforward, dropout, activation,
@@ -356,6 +357,7 @@ class MyTransformer(nn.Transformer):
         self.Mode = Mode
         assert DecoderForwardConfigs is not None, 'DecoderForwardConfigs should be initial in get_transformer()'
         self.DecoderForwardConfigs = DecoderForwardConfigs
+        self.matrix = matrix  # 49 to 21 matrix in SequencialReg2DDecode3D
 
     def forward_old(self, src: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,  # ! remove tgt param
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
@@ -774,11 +776,14 @@ class MyTransformer(nn.Transformer):
             if self.DecoderForwardConfigs['DecSrcContent'] == 'zero':
                 tgt = torch.zeros((B, tgt_N, D), device=device)
             else:                                           # 'feature'
-                if DecOutCount == '21 + 49':
+                if DecOutCount == '21 joint':
+                    tgt = memory_BFJD[:, frame_id]
+                elif DecOutCount == '49 verts':
+                    tgt = torch.bmm(self.matrix.repeat(B, 1, 1), memory_BFJD[:, frame_id])  # (B 49 21) @ (B J D)
+                elif DecOutCount == '21 + 49':
+                    # TODO: seperate joint- Z/F and verts- Z/F
                     tgt = torch.zeros((B, tgt_N, D), device=device)
                     tgt[:, :21] = memory_BFJD[:, frame_id]  # [feature, zero]
-                else:
-                    tgt = memory_BFJD[:, frame_id]
 
             if self.DecoderForwardConfigs['DecMemUpdate'] == 'append':
                 memory_BJsD = update_embedding(memory_BJsD, memory_BFJD[:, frame_id], dim=1)
@@ -1007,6 +1012,7 @@ def transformer_config_correctness_check(
     norm_first, NormTwice,
     Mode,
     DecOutCount, DecSrcContent, DecMemUpdate, DecMemReplace,
+    matrix,
     ):
     ErrorMessages = []
 
@@ -1043,11 +1049,18 @@ def transformer_config_correctness_check(
 
     ## Decoder configs
     if DecMemReplace == True:
-        if DecOutCount not in ('21 joint', '21 + 49'):
+        if DecOutCount in ('49 verts'):
             ErrorMessages += [f'DecOutCount should be "21 joint" or "21 + 49" while DecMemReplace == True, got DecOutCount: {DecOutCount}']
     if DecSrcContent == 'feature':
-        if DecOutCount not in ('21 joint', '21 + 49'):
-            ErrorMessages += [f'DecOutCount should be "21 joint" or "21 + 49" while DecSrcContent == "feature", got DecOutCount: {DecOutCount}']
+        if DecOutCount in ('49 verts'):
+            if matrix is None:
+                ErrorMessages += [f'DecOutCount should be "21 joint" or "21 + 49" while DecSrcContent == "feature", got DecOutCount: {DecOutCount}']
+            elif not isinstance(matrix, nn.Parameter):
+                ErrorMessages += [f'"matrix" must be type: nn.Parameter while DecSrcContent == "feature" & DecOutCount == "49 verts", ' + \
+                                  f'got: {type(matrix)}']
+            elif not matrix.shape == (49, 21):
+                ErrorMessages += [f'"matrix.shape" must be (49, 21) while DecSrcContent == "feature" & DecOutCount == "49 verts", ' + \
+                                  f'got: {matrix.shape}']
 
     if ErrorMessages != []:
         print('[Config Error]')
@@ -1060,6 +1073,7 @@ def get_transformer(d_model, nhead, num_encoder_layers, num_decoder_layers,
                     NormTwice=False,
                     Mode: Optional[str]='base',
                     DecoderForwardConfigs: Optional[dict]=None,
+                    matrix: Optional[nn.Parameter]=None,
                     ) -> MyTransformer:
     if DecoderForwardConfigs is None:
         DecoderForwardConfigs = {
@@ -1069,7 +1083,7 @@ def get_transformer(d_model, nhead, num_encoder_layers, num_decoder_layers,
             'DecMemReplace': True,
         }
     transformer_config_correctness_check(norm_first=norm_first, NormTwice=NormTwice, Mode=Mode,
-                                         **DecoderForwardConfigs)
+                                         **DecoderForwardConfigs, matrix=matrix)
 
     encoder_layer = MyEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True, norm_first=norm_first, NormTwice=NormTwice)
                                  # dim_feedforward=2048, dropout=0.1, layer_norm_eps=layer_norm_eps
@@ -1092,6 +1106,7 @@ def get_transformer(d_model, nhead, num_encoder_layers, num_decoder_layers,
         batch_first=True,
         Mode=Mode,
         DecoderForwardConfigs=DecoderForwardConfigs,
+        matrix=matrix,
     )
     return transformer
 

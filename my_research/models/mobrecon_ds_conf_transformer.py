@@ -189,7 +189,7 @@ class SequencialReg2DDecode3D(nn.Module):
         # ! EDIT model parameters here
         _ARCH = 'b33'  # b/d/e: base/ de/encoder only, 33: enc & dec layer counts
         _NORM = 'twice'  #  ['twice', 'once', 'first'], once/twice-> norm_last
-        _DF = 'FR70F'
+        _DF = 'FX49F'
         self.transformer = get_transformer(
             self.latent_size, nhead=1, num_encoder_layers=int(_ARCH[1]), num_decoder_layers=int(_ARCH[2]),
             norm_first=True     if _NORM == 'first' else False,
@@ -216,6 +216,8 @@ class SequencialReg2DDecode3D(nn.Module):
                 # 'DecOutCount': '21 + 49',  # ['21 joint', '49 verts', '21 + 49']
                 # 'DecSrcContent': 'feature', # ['zero', 'feature']
             },  # TODO: error occur while DecSrcContent ==  'feature && mode='decoder only'
+            matrix=self.upsample,   # (49, 21) mat, used while decoder forwarding from Verts Feature
+                                    # the weight won't copied two times
             )
         # self.feature_norm = nn.LayerNorm((21, self.latent_size), eps=1e-5)
         self.feature_norm = nn.LayerNorm(self.latent_size, eps=1e-5)
