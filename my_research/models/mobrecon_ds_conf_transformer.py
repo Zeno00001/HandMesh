@@ -360,6 +360,37 @@ class SequencialReg2DDecode3D(nn.Module):
         return pred, pred_joint
         # return rearrange(pred, '(B F) J D -> B F J D', F=frame_len)
 
+    ''' Apply norm method by
+        Replace this snippet to torch.nn.functoinal._scaled_dot_product_attention()
+    attn = torch.bmm(q, k.transpose(-2, -1))  # (B, query, key)
+
+    def norm_(attn_):
+        min_ = torch.min(attn_, dim=2, keepdim=True).values
+        attn_ -= min_
+        sum_ = torch.sum(attn_, dim=2, keepdim=True)
+        attn_ /= sum_
+        return attn_
+
+    _APPLY_SOFTMAX = False
+    if _APPLY_SOFTMAX:
+        if attn_mask is not None:
+            attn += attn_mask
+        attn = softmax(attn, dim=-1)
+    else:
+        min_ = torch.min(attn, dim=2, keepdim=True).values
+        attn -= min_
+
+        if attn_mask is not None:
+            attn += attn_mask
+        attn[attn < 0] = 0
+
+        sum_ = torch.sum(attn, dim=2, keepdim=True)
+        attn /= sum_ # <- replace softmax to this
+
+    if dropout_p > 0.0:
+        attn = dropout(attn, p=dropout_p)
+    '''
+
 
 if __name__ == '__main__':
     """Test the model
