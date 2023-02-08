@@ -573,7 +573,7 @@ class MyTransformer(nn.Transformer):
                 DiagonalMask, JointConfMask,
                 ReturnEachEncoderLayerOutput = (ReturnEncoderOutput=='each'),
                 )
-            out = self.forward_decoder(memory_BFJD.clone(),
+            out = self.forward_decoder(memory_BFJD, # .clone(),
                 joint_embedding, positional_embedding, serial_embedding, verts_embedding,
                 DiagonalMask, JointConfMask,
                 )
@@ -589,7 +589,7 @@ class MyTransformer(nn.Transformer):
                 temporal_mode=True,
                 )
         elif self.Mode == 'decoder only':
-            out = self.forward_decoder(src.clone(),
+            out = self.forward_decoder(src, # .clone(),
                 joint_embedding, positional_embedding, serial_embedding, verts_embedding,
                 DiagonalMask, JointConfMask,
                 )
@@ -760,7 +760,9 @@ class MyTransformer(nn.Transformer):
         # Init
         memory_BJsD = None  # (B,J,D) -> (B,2J,D) -> (B,3J,D)
         if self.DecoderForwardConfigs['DecMemUpdate'] == 'full':
-            memory_BJsD = rearrange(memory_BFJD, 'B F J D -> B (F J) D')
+            memory_BJsD = rearrange(memory_BFJD, 'B F J D -> B (F J) D').clone()
+            # fix bug in FR70FF
+            # RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation
         output_F_BVD = []
 
         # Iteratively predict each frame
