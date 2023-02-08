@@ -645,6 +645,42 @@ class HanCo(data.Dataset):
         fig.suptitle(title)
         plt.show()
 
+    def _check_correctness(self, start=0):
+        ''' check the correctness of this dataset ( in certain phase )
+            full image, un-broken labels
+        '''
+        from tqdm import tqdm
+        print(f'Check correctness of HanCo[{self.phase}]...')
+
+        Error_seqs = []
+        for idx in tqdm(range(start, self.__len__())):
+            aug_id, seq_id, cam_id = self._inverse_compute_index(idx)
+            max_seq_length = len(os.listdir(
+                os.path.join(self.hanco_root, self.image_aug[aug_id], f'{seq_id:04d}', f'cam{cam_id}')
+            ))
+            annots = read_annot(self.hanco_root, seq_id, cam_id)
+
+            global_t = None
+            try:
+                global_t = annots['global_t']
+                _ = annots['verts'], annots['joint'], annots['intrinsic']
+            except:
+                Error_seqs += [f'label file broken, data[{idx}]'
+                               f'aug: {self.image_aug[aug_id]}, seq: {seq_id}, cam: {cam_id}']
+
+            if global_t is not None:
+                if len(annots['global_t']) != max_seq_length:
+                    Error_seqs += [f'image counts not fit, label: {len(annots["global_t"])} <-> img: {max_seq_length}, '
+                                   f'data[{idx}], aug: {self.image_aug[aug_id]}, seq: {seq_id}, cam: {cam_id}']
+
+            if len(Error_seqs) >= 5:
+                print(f'TOO MUCH ERRORS, check to data[{idx}]')
+                break
+
+        print(f'There are {len(Error_seqs)} errors')
+        for Error in Error_seqs:
+            print(Error)
+
 
     def __exp_stacked_images(self):
         ''' check if images, masks are read successfully
@@ -723,6 +759,9 @@ if __name__ == '__main__':
     cfg.DATA.HANCO.ROT = 0
 
     dataset = HanCo(cfg, phase='train', frame_counts=8)
+    dataset._check_correctness()
+    for i in range(len(dataset)):
+        data = dataset[i]
     index = dataset._compute_index(0, 2, 3)  # 1st seq in validation: 75
     # index = 100
 
