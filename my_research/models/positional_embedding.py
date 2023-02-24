@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-# from einops import rearrange
+from einops import rearrange, repeat
 
 def uv_encoding(uv, feature_len, loooo=10000):
     '''
@@ -27,3 +27,21 @@ def uv_encoding(uv, feature_len, loooo=10000):
     # pos = rearrange(pos, 'B J C -> B C J')
 
     return pos
+
+def image_uv_encoding(width, feature_len):
+    '''
+    width = image feature.H or W
+    return = encoding = (H, W, feature_len)
+
+    Note that: Accept H==W case only
+    '''
+    y_s = repeat(torch.arange(width), 'H -> H W', W=width)
+    x_s = repeat(torch.arange(width), 'W -> H W', H=width)
+    uv_s = rearrange([x_s, y_s], 'C H W -> H W C').to(torch.float32)  # (H W 2)
+    uv_s = uv_s / width + 0.5 / width
+    uv_s = uv_s * 2 - 1
+    # print(uv_s[:, :, 0])
+    # print(uv_s[:, :, 1])  # (:, :, [x,y] )
+
+    out = uv_encoding(uv_s, feature_len=feature_len)  # treat H, W as B, J
+    return out  # (H, W, 256)
