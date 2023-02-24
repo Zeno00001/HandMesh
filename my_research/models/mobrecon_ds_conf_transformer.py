@@ -20,7 +20,7 @@ from my_research.models.densestack_conf import DenseStack_Conf_Backbone
 # from my_research.models.modules import Reg2DDecode3D
 from my_research.models.modules import SpiralDeblock, conv_layer, linear_layer
 from my_research.models.transformer import get_transformer
-from my_research.models.positional_embedding import uv_encoding
+from my_research.models.positional_embedding import uv_encoding, image_uv_encoding
 
 from my_research.models.loss import l1_loss, normal_loss, edge_length_loss, contrastive_loss_3d, contrastive_loss_2d
 from utils.read import spiral_tramsform
@@ -118,11 +118,14 @@ class MobRecon_DS_conf_Transformer(nn.Module):
         loss_dict['joint_conf_loss'] = 0.1 * l1_loss(joint_conf_pred.view(-1, 21), joint_conf_gt)
         if kwargs.get('joint_3d_pred') is not None:
             joint_3d_pred_loss = 0
+            # joint_3d_pred_loss += l1_loss(joint_preds[0], joint_gt)
+            # joint_3d_pred_loss += l1_loss(joint_preds[1], joint_gt) * 0.5  # 0.5 for dec out
             for head_i in range(Headcounts):
                 joint_3d_pred_loss += l1_loss(joint_preds[head_i], joint_gt)
             joint_3d_pred_loss /= Headcounts
+
             loss_dict['joint_3d_loss'] = 0.5 * joint_3d_pred_loss
-        
+
         loss_dict['normal_loss'] = 0.1 * normal_loss(verts_pred, verts_gt, kwargs['face'].to(verts_pred.device))
         loss_dict['edge_loss'] = edge_length_loss(verts_pred, verts_gt, kwargs['face'].to(verts_pred.device))
 
@@ -189,7 +192,8 @@ class SequencialReg2DDecode3D(nn.Module):
         # ! EDIT model parameters here
         _ARCH = 'b33'  # b/d/e: base/ de/encoder only, 33: enc & dec layer counts
         _NORM = 'twice'  #  ['twice', 'once', 'first'], once/twice-> norm_last
-        _DF = 'FR70FF'
+        _DF = 'FX49F'
+        _CROSS_2_IMAGE = ['enc']
         self.transformer = get_transformer(
             self.latent_size, nhead=1, num_encoder_layers=int(_ARCH[1]), num_decoder_layers=int(_ARCH[2]),
             norm_first=   True  if _NORM == 'first' else False,
@@ -200,6 +204,9 @@ class SequencialReg2DDecode3D(nn.Module):
             # norm_first=False,       # norm first to normalize joint features
             # NormTwice=True,         # norm_first should be False
             # Mode='base',            # ['base', 'encoder only', 'decoder only']
+
+            EncAddCrossAttn2ImageFeat = 'enc' in _CROSS_2_IMAGE,
+            DecAddCrossAttn2ImageFeat = 'dec' in _CROSS_2_IMAGE,
 
             # in Decoder
             DecoderForwardConfigs = {
@@ -293,14 +300,19 @@ class SequencialReg2DDecode3D(nn.Module):
         x   -> x   : (B, F, J+1, new_D) # .cat(glob), arrange
         '''
         uv = torch.clamp((uvc[:, :, :2] - 0.5) * 2, -1, 1).detach()  # ! NEW
+        # u, v -> x, y coord
         conf = torch.clamp(uvc[:, :, 2:], 0, 1).detach()  # ! NEW, [160, 21, 1]
         # self.show_conf_hist(conf)
         padding_mask = self.get_padding_mask(conf)
         uv_embed = uv_encoding(uv, feature_len=self.latent_size // 2)
+        image_uv_embed = image_uv_encoding(width=x.shape[2], feature_len=self.latent_size // 2).to(x.device)
         # uv_embed = None
 
         x = self.de_layer_conv(x)  # change channel to self.latent_size
         # (BF, 256, 4, 4) -> (BF, 256 -3, 4, 4)
+
+        image_feature = rearrange(x, '(B F) C H W -> B F C H W', F=frame_len).detach()  # (B, F, 256, 4, 4)
+        B, F = image_feature.shape[:2]
 
         x = self.index(x, uv).permute(0, 2, 1)  # [BF, 21, D=256-3]
         # x = torch.cat([x, uv, conf], dim=2)     # [BF, 21, D=256]
@@ -309,12 +321,16 @@ class SequencialReg2DDecode3D(nn.Module):
         padding_mask = rearrange(padding_mask, '(B F) J -> B F J', F=frame_len)
         conf = rearrange(conf, '(B F) J () -> B F J', F=frame_len)
 
+        image_feature = rearrange(image_feature, 'B F C H W -> B F (H W) C')  # to fit BFJD shape
+        image_uv_embed = repeat(image_uv_embed, 'H W C -> B F (H W) C', B=B, F=F)  # B*F images
         x = rearrange(x, '(B F) J D -> B F J D', F=frame_len)  # ! new
         x = self.feature_norm(x)  # norm (B, features)
+        image_feature = self.feature_norm(image_feature)  # still seperate grad to linearNorm
 
         J = x.shape[2]
         x, enc_x = self.transformer(x, joint_embedding=self.joint_embed.weight, verts_embedding=self.verts_embed.weight,
                                     serial_embedding=self.serial_embed.weight, positional_embedding=uv_embed,
+                                    image_feature=image_feature, image_positional_embedding=image_uv_embed,
                     DiagonalMask = { # mode ,   p
                         'enc self' : ['no', 0.0],   # 'part' of the diag
                         'dec self' : ['no', 0.0],   # 'full' of the diag
@@ -346,7 +362,7 @@ class SequencialReg2DDecode3D(nn.Module):
         if enc_x != []:  # ReturnEncoderOutput != 'no'
             for enc_i in enc_x:                         # encoder out
                 pred_joint += [self.joint_head(enc_i)]
-        # pred_joint = [self.joint_head(out_joint)]       # decoder out, DecOutCount == J+V
+        # pred_joint += [self.joint_head(out_joint)]       # decoder out, DecOutCount == J+V
 
 
         # 21joint to 49 verts

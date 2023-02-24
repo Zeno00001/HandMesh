@@ -46,6 +46,7 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
                  layer_norm_eps: float = 1e-5, batch_first: bool = False, norm_first: bool = False,
                  device=None, dtype=None,
                  NormTwice=False,
+                 AddCrossAttn2ImageFeat=False,
                  ):
         super().__init__(d_model, nhead, dim_feedforward, dropout,
                  activation,
@@ -63,10 +64,22 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
                 return x
             self.norm3 = self.norm4 = empty_func
 
+        self.AddCrossAttn2ImageFeat = AddCrossAttn2ImageFeat
+        if AddCrossAttn2ImageFeat:
+            # remain the naming rule in Decoder
+            self.multihead_attn_2 = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first,
+                                                          **factory_kwargs)
+            self.dropout2_2 = nn.Dropout(dropout)
+            self.norm2_2 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+            self.norm5_2 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)  # _mha2 out
+            # _ca = norm5_2( mha_2( x, mem
+            # x   = norm2_2( x+ _ca
+
     def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
         src_key_padding_mask: Optional[Tensor] = None,
         x_embedding: Optional[Tensor] = None,  # ! NEW joint embedding
         WeightedPaddingMask=False,           # Apply key <- key * src_key_passing_mask; src_mask~(0, 1)
+        memory2: Optional[Tensor] = None, memory2_embedding: Optional[Tensor] = None,
         ) -> Tensor:
         r"""Pass the input through the encoder layer.
 
@@ -88,6 +101,12 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
         else:
             _sa_out = self.norm3(self._sa_block(x, src_mask, src_key_padding_mask, x_embedding, WeightedPaddingMask))  # check _sa.var()
             x = self.norm1(x + _sa_out)
+
+            if self.AddCrossAttn2ImageFeat:
+                _ca_out2 = self.norm5_2(self._mha_block2(
+                    x, memory2, x_embedding=x_embedding, mem2_embedding=memory2_embedding))
+                x = self.norm2_2(x + _ca_out2)
+
             _ff_out = self.norm4(self._ff_block(x))  # check _ff.var()
             x = self.norm2(x + _ff_out)
             # x = x + self.norm3(self._sa_block(x, src_mask, src_key_padding_mask, x_embedding))
@@ -118,6 +137,21 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
             show_attn(w.detach().cpu().numpy())
         return self.dropout1(x)
 
+    # multihead attention block, to cross image-feature
+    def _mha_block2(self, x: Tensor, mem2: Tensor,
+                    x_embedding: Tensor, mem2_embedding: Tensor,
+                    ) -> Tensor:
+        q = self.with_pos_embed(x, x_embedding)
+        k = self.with_pos_embed(mem2, mem2_embedding)
+
+        x, w = self.multihead_attn_2(query=q, key=k, value=mem2,
+                                # attn_mask=attn_mask,
+                                # key_padding_mask=key_padding_mask,
+                                need_weights=CHECK_W)  # True for attention map
+        if CHECK_W:
+            show_attn(w.detach().cpu().numpy())
+        return self.dropout2_2(x)
+
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
         if pos != None and tensor.shape != pos.shape:
             raise RuntimeError(f'positional embedding shape not matched, tensor: {tensor.shape}, pos: {pos.shape}')
@@ -135,6 +169,7 @@ class MyEncoder(nn.TransformerEncoder):
         x_embedding: Optional[Tensor] = None,  # ! NEW joint embedding
         WeightedPaddingMask=False,
         ReturnEachLayerOutput=False,
+        memory2: Optional[Tensor] = None, memory2_embedding: Optional[Tensor] = None,
         ) -> Tensor:
         r"""Pass the input through the encoder layers in turn.
 
@@ -150,7 +185,10 @@ class MyEncoder(nn.TransformerEncoder):
         out_each_layer = []
 
         for mod in self.layers:
-            output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask, x_embedding=x_embedding, WeightedPaddingMask=WeightedPaddingMask)
+            output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask,
+                         x_embedding=x_embedding, WeightedPaddingMask=WeightedPaddingMask,
+                         memory2=memory2, memory2_embedding=memory2_embedding,
+                         )
             if ReturnEachLayerOutput:
                 out_each_layer += [output]
 
@@ -178,6 +216,7 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
                  layer_norm_eps: float = 1e-5, batch_first: bool = False, norm_first: bool = False,
                  device=None, dtype=None,
                  NormTwice=False,
+                 AddCrossAttn2ImageFeat=False,
                  ) -> None:
         super().__init__(d_model, nhead, dim_feedforward, dropout,
                  activation,
@@ -197,11 +236,22 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
                 return x
             self.norm4 = self.norm5 = self.norm6 = empty_func
 
+        self.AddCrossAttn2ImageFeat = AddCrossAttn2ImageFeat
+        if AddCrossAttn2ImageFeat:
+            self.multihead_attn_2 = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first,
+                                                          **factory_kwargs)
+            self.dropout2_2 = nn.Dropout(dropout)
+            self.norm2_2 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)
+            self.norm5_2 = nn.LayerNorm(d_model, eps=layer_norm_eps, **factory_kwargs)  # _mha2 out
+            # _ca = norm5_2( mha_2( x, mem
+            # x   = norm2_2( x+ _ca
+
 
     def forward(self, tgt: Tensor, memory: Tensor, tgt_mask: Optional[Tensor] = None, memory_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
                 tgt_embedding: Optional[Tensor] = None, memory_embedding: Optional[Tensor] = None,  # ! NEW 2 embedding
                 WeightedMemPaddingMask=False,  # Apply key <- key * memory_key_padding_mask; mem_mask~(0, 1)
+                memory2: Optional[Tensor] = None, memory2_embedding: Optional[Tensor] = None,
                 ) -> Tensor:
         r"""Pass the inputs (and mask) through the decoder layer.
 
@@ -233,6 +283,11 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
                                                  x_embedding=tgt_embedding, mem_embedding=memory_embedding,
                                                  WeightedMemPaddingMask=WeightedMemPaddingMask))
             x = self.norm2(x + _ca_out)
+
+            if self.AddCrossAttn2ImageFeat:
+                _ca_out2 = self.norm5_2(self._mha_block2(
+                    x, memory2, x_embedding=tgt_embedding, mem2_embedding=memory2_embedding))
+                x = self.norm2_2(x + _ca_out2)
 
             _ff_out = self.norm6(self._ff_block(x))
             x = self.norm3(x + _ff_out)
@@ -280,6 +335,21 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
             show_attn(w.detach().cpu().numpy())
         return self.dropout2(x)
 
+    # multihead attention block, to cross image-feature
+    def _mha_block2(self, x: Tensor, mem2: Tensor,
+                    x_embedding: Tensor, mem2_embedding: Tensor,
+                    ) -> Tensor:
+        q = self.with_pos_embed(x, x_embedding)
+        k = self.with_pos_embed(mem2, mem2_embedding)
+
+        x, w = self.multihead_attn_2(query=q, key=k, value=mem2,
+                                # attn_mask=attn_mask,
+                                # key_padding_mask=key_padding_mask,
+                                need_weights=CHECK_W)  # True for attention map
+        if CHECK_W:
+            show_attn(w.detach().cpu().numpy())
+        return self.dropout2_2(x)
+
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
         if pos != None and tensor.shape != pos.shape:
             raise RuntimeError(f'positional embedding shape not matched, tensor: {tensor.shape}, pos: {pos.shape}')
@@ -299,6 +369,7 @@ class MyDecoder(nn.TransformerDecoder):
                 memory_key_padding_mask: Optional[Tensor] = None,
                 tgt_embedding: Optional[Tensor] = None, memory_embedding: Optional[Tensor] = None,  # ! NEW 2 embedding
                 WeightedMemPaddingMask: bool = False,
+                memory2: Optional[Tensor] = None, memory2_embedding: Optional[Tensor] = None,
                 ) -> Tensor:
         r"""Pass the inputs (and mask) through the decoder layer in turn.
 
@@ -323,7 +394,9 @@ class MyDecoder(nn.TransformerDecoder):
                          memory_key_padding_mask=memory_key_padding_mask,
                          tgt_embedding=tgt_embedding,
                          memory_embedding=memory_embedding,
-                         WeightedMemPaddingMask=WeightedMemPaddingMask)
+                         WeightedMemPaddingMask=WeightedMemPaddingMask,
+                         memory2=memory2, memory2_embedding=memory2_embedding,
+                         )
 
         if self.norm is not None:
             output = self.norm(output)
@@ -347,6 +420,8 @@ class MyTransformer(nn.Transformer):
                  Mode: Optional[str]='base',
                  DecoderForwardConfigs: Optional[dict]=None,
                  matrix: Optional[nn.Parameter]=None,
+                 EncAddCrossAttn2ImageFeat: Optional[bool]=False,
+                 DecAddCrossAttn2ImageFeat: Optional[bool]=False,
                  ) -> None:
         super().__init__(d_model, nhead, num_decoder_layers, num_decoder_layers,
                          dim_feedforward, dropout, activation,
@@ -358,6 +433,8 @@ class MyTransformer(nn.Transformer):
         assert DecoderForwardConfigs is not None, 'DecoderForwardConfigs should be initial in get_transformer()'
         self.DecoderForwardConfigs = DecoderForwardConfigs
         self.matrix = matrix  # 49 to 21 matrix in SequencialReg2DDecode3D
+        self.EncCross2ImageFeat = EncAddCrossAttn2ImageFeat  # Additional CrossAttn Layer in Encoder
+        self.DecCross2ImageFeat = DecAddCrossAttn2ImageFeat  # Additional CrossAttn Layer in Decoder
 
     def forward_old(self, src: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,  # ! remove tgt param
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
@@ -528,6 +605,8 @@ class MyTransformer(nn.Transformer):
                 verts_embedding: Optional[Tensor] = None,  # (V, C)
                 serial_embedding: Optional[Tensor] = None,  # (F, C)
                 positional_embedding: Optional[Tensor] = None,  # (B, F, J, C)
+                image_feature: Optional[Tensor] = None,  # B F (H W) C
+                image_positional_embedding: Optional[Tensor] =None,  # B F (H W) C
                 DiagonalMask: Dict[str, List] = None,
                 JointConfMask: Dict[str, Any] = None,
                 ReturnEncoderOutput = 'no',
@@ -570,11 +649,13 @@ class MyTransformer(nn.Transformer):
         if self.Mode == 'base':
             memory_BFJD, each_enc_out = self.forward_encoder(src,
                 joint_embedding, positional_embedding, serial_embedding,
+                image_feature, image_positional_embedding,
                 DiagonalMask, JointConfMask,
                 ReturnEachEncoderLayerOutput = (ReturnEncoderOutput=='each'),
                 )
             out = self.forward_decoder(memory_BFJD, # .clone(),
                 joint_embedding, positional_embedding, serial_embedding, verts_embedding,
+                image_feature, image_positional_embedding,
                 DiagonalMask, JointConfMask,
                 )
         elif self.Mode == 'encoder only':
@@ -584,6 +665,7 @@ class MyTransformer(nn.Transformer):
             # diff norm dimensions(F*J, 256)
             out, each_enc_out = self.forward_encoder(src,
                 joint_embedding, positional_embedding, serial_embedding,
+                image_feature, image_positional_embedding,
                 DiagonalMask, JointConfMask,
                 ReturnEachEncoderLayerOutput = (ReturnEncoderOutput=='each'),
                 temporal_mode=True,
@@ -591,6 +673,7 @@ class MyTransformer(nn.Transformer):
         elif self.Mode == 'decoder only':
             out = self.forward_decoder(src, # .clone(),
                 joint_embedding, positional_embedding, serial_embedding, verts_embedding,
+                image_feature, image_positional_embedding,
                 DiagonalMask, JointConfMask,
                 )
 
@@ -609,6 +692,7 @@ class MyTransformer(nn.Transformer):
 
     def forward_encoder(self, src,
                         joint_embedding, positional_embedding, serial_embedding,
+                        image_feature, image_positional_embedding,  #  B F (H W) C
                         DiagonalMask: Dict[str, List],
                         JointConfMask: Dict[str, Any],
                         ReturnEachEncoderLayerOutput,
@@ -642,6 +726,10 @@ class MyTransformer(nn.Transformer):
             SA_conf_joint_mask = JointConfMask['joint conf']  # (B F J)
             WeightedPaddingMask = True
 
+        memory2 = memory2_embedding = None
+        if self.EncCross2ImageFeat:
+            memory2 = rearrange(image_feature, 'B F HW C -> (B F) HW C')
+            memory2_embedding = rearrange(image_positional_embedding, 'B F HW C -> (B F) HW C')
 
         # Reshape & Forward
         if not temporal_mode:
@@ -657,7 +745,11 @@ class MyTransformer(nn.Transformer):
                                        src_key_padding_mask=SA_conf_joint_mask,
                                        x_embedding=x_embedding,
                                        WeightedPaddingMask=WeightedPaddingMask,
-                                       ReturnEachLayerOutput=ReturnEachEncoderLayerOutput)
+                                       ReturnEachLayerOutput=ReturnEachEncoderLayerOutput,
+
+                                       memory2=memory2,
+                                       memory2_embedding=memory2_embedding,  # all positional_emb are same
+                                       )
 
             if mem_list != []: # or if ReturnEachEncoderLayerOutput:
                 for i in range(len(mem_list)):
@@ -685,6 +777,7 @@ class MyTransformer(nn.Transformer):
 
     def forward_decoder(self, memory_BFJD,
                         joint_embedding, positional_embedding, serial_embedding, verts_embedding,
+                        image_feature, image_positional_embedding,  #  B F (H W) C
                         DiagonalMask: Dict[str, List],
                         JointConfMask: Dict[str, Any]):
         ''' Note that: ..._BFJD.shape == (B F J D), ..._BJsD.shape == (B FJ D)
@@ -815,12 +908,19 @@ class MyTransformer(nn.Transformer):
                 else:                                          # 'full'
                     mem_padding_mask = mem_conf_mask_BJs
 
-            # Iterative output result
+            memory2 = memory2_embedding = None
+            if self.DecCross2ImageFeat:
+                memory2 = image_feature[:, frame_id]
+                memory2_embedding = image_positional_embedding[:, frame_id]
+
             output = self.decoder(tgt, memory_BJsD,
                 tgt_mask=SA_diag_mask, memory_mask=CA_diag_mask,
                 tgt_key_padding_mask=None, memory_key_padding_mask=mem_padding_mask,
                 tgt_embedding=tgt_embedding, memory_embedding=mem_embedding,
-                WeightedMemPaddingMask=WeightedMemPaddingMask
+                WeightedMemPaddingMask=WeightedMemPaddingMask,
+
+                memory2=memory2,
+                memory2_embedding=memory2_embedding,  # all positional_emb are same
             )
 
             # Iterative update memory
@@ -1089,6 +1189,8 @@ def get_transformer(d_model, nhead, num_encoder_layers, num_decoder_layers,
                     Mode: Optional[str]='base',
                     DecoderForwardConfigs: Optional[dict]=None,
                     matrix: Optional[nn.Parameter]=None,
+                    EncAddCrossAttn2ImageFeat: Optional[bool]=False,
+                    DecAddCrossAttn2ImageFeat: Optional[bool]=False,
                     ) -> MyTransformer:
     if DecoderForwardConfigs is None:
         DecoderForwardConfigs = {
@@ -1100,13 +1202,15 @@ def get_transformer(d_model, nhead, num_encoder_layers, num_decoder_layers,
     transformer_config_correctness_check(norm_first=norm_first, NormTwice=NormTwice, Mode=Mode,
                                          **DecoderForwardConfigs, matrix=matrix)
 
-    encoder_layer = MyEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True, norm_first=norm_first, NormTwice=NormTwice)
+    encoder_layer = MyEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True, norm_first=norm_first, NormTwice=NormTwice,
+                                   AddCrossAttn2ImageFeat=EncAddCrossAttn2ImageFeat)
                                  # dim_feedforward=2048, dropout=0.1, layer_norm_eps=layer_norm_eps
     encoder_norm = nn.LayerNorm(d_model, eps=layer_norm_eps)  # final norm in encoder
     # encoder_norm = nn.LayerNorm((21, d_model), eps=layer_norm_eps)  # final norm in encoder
     encoder = MyEncoder(encoder_layer=encoder_layer, num_layers=num_encoder_layers, norm=encoder_norm)
 
-    decoder_layer = MyDecoderLayer(d_model=d_model, nhead=nhead, batch_first=True, norm_first=norm_first, NormTwice=NormTwice)
+    decoder_layer = MyDecoderLayer(d_model=d_model, nhead=nhead, batch_first=True, norm_first=norm_first, NormTwice=NormTwice,
+                                   AddCrossAttn2ImageFeat=DecAddCrossAttn2ImageFeat)
                                  # dim_feedforward=2048, dropout=0.1, layer_norm_eps=layer_norm_eps
     decoder_norm = nn.LayerNorm(d_model, eps=layer_norm_eps)  # final norm in decoder
     # decoder_norm = nn.LayerNorm((21, d_model), eps=layer_norm_eps)  # final norm in decoder
@@ -1122,6 +1226,8 @@ def get_transformer(d_model, nhead, num_encoder_layers, num_decoder_layers,
         Mode=Mode,
         DecoderForwardConfigs=DecoderForwardConfigs,
         matrix=matrix,
+        EncAddCrossAttn2ImageFeat=EncAddCrossAttn2ImageFeat,
+        DecAddCrossAttn2ImageFeat=DecAddCrossAttn2ImageFeat,
     )
     return transformer
 
