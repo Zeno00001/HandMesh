@@ -14,18 +14,38 @@ from torch import Tensor
 from typing import Optional, Union, Callable, Any, Dict, List
 
 CHECK_W = False
+_variances = []  # ('name', var(x), var(_out), ratio)
+def _append_variance(*row):
+    tmp = [
+        row[0],
+        row[1].cpu().item(),
+        row[2].cpu().item(),
+    ]
+    global _variances
+    _variances += [tmp]
 
-def show_attn(attn):
+CHECK_VAR = True
+
+def show_attn(attn, mode_cross2d=False):
     # attn.shape: (B, J, J)
     # type == numpy arr
     B = attn.shape[0]
     H = min(2, B)
 
-    for i in range(H): # first 5 batches
-        ax = plt.subplot(H, 1, i+1)
-        ax.imshow(attn[i])
-        ax.set_title(f'Batch: {i}')
-        # ax.axis('off')
+    if mode_cross2d == False:
+        for i in range(H): # first 5 batches
+            ax = plt.subplot(H, 1, i+1)
+            ax.imshow(attn[i])
+            ax.set_title(f'image: {i}')
+            # ax.axis('off')
+    else:
+        # (B J 256)
+        pixels = attn.shape[2]
+        width = int(pixels ** (1/2))
+        for i in range(H):
+            ax = plt.subplot(H, 1, i+1)
+            ax.imshow(attn[0, i].reshape(width, width))
+            ax.set_title(f'joint: {i}')
 
     plt.show()
 
@@ -100,14 +120,17 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
             x = x + self._ff_block(self.norm2(x))
         else:
             _sa_out = self.norm3(self._sa_block(x, src_mask, src_key_padding_mask, x_embedding, WeightedPaddingMask))  # check _sa.var()
+            if CHECK_VAR: _append_variance('E_sa_out', x.detach().var(), _sa_out.detach().var())
             x = self.norm1(x + _sa_out)
 
             if self.AddCrossAttn2ImageFeat:
                 _ca_out2 = self.norm5_2(self._mha_block2(
                     x, memory2, x_embedding=x_embedding, mem2_embedding=memory2_embedding))
+                if CHECK_VAR: _append_variance('E_ca_out2', x.detach().var(), _ca_out2.detach().var())
                 x = self.norm2_2(x + _ca_out2)
 
             _ff_out = self.norm4(self._ff_block(x))  # check _ff.var()
+            if CHECK_VAR: _append_variance('E_ff_out', x.detach().var(), _ff_out.detach().var())
             x = self.norm2(x + _ff_out)
             # x = x + self.norm3(self._sa_block(x, src_mask, src_key_padding_mask, x_embedding))
             # x = self.norm1(x)
@@ -149,7 +172,7 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
                                 # key_padding_mask=key_padding_mask,
                                 need_weights=CHECK_W)  # True for attention map
         if CHECK_W:
-            show_attn(w.detach().cpu().numpy())
+            show_attn(w.detach().cpu().numpy(), mode_cross2d=True)
         return self.dropout2_2(x)
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
@@ -277,19 +300,23 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
             x = x + self._ff_block(self.norm3(x))
         else:
             _sa_out = self.norm4(self._sa_block(x, tgt_mask, tgt_key_padding_mask, x_embedding=tgt_embedding))
+            if CHECK_VAR: _append_variance('D_sa_out', x.detach().var(), _sa_out.detach().var())
             x = self.norm1(x + _sa_out)
 
             _ca_out = self.norm5(self._mha_block(x, memory, memory_mask, memory_key_padding_mask,
                                                  x_embedding=tgt_embedding, mem_embedding=memory_embedding,
                                                  WeightedMemPaddingMask=WeightedMemPaddingMask))
+            if CHECK_VAR: _append_variance('D_ca_out', x.detach().var(), _ca_out.detach().var())
             x = self.norm2(x + _ca_out)
 
             if self.AddCrossAttn2ImageFeat:
                 _ca_out2 = self.norm5_2(self._mha_block2(
                     x, memory2, x_embedding=tgt_embedding, mem2_embedding=memory2_embedding))
+                if CHECK_VAR: _append_variance('D_ca_out2', x.detach().var(), _ca_out2.detach().var())
                 x = self.norm2_2(x + _ca_out2)
 
             _ff_out = self.norm6(self._ff_block(x))
+            if CHECK_VAR: _append_variance('D_ff_out', x.detach().var(), _ff_out.detach().var())
             x = self.norm3(x + _ff_out)
             # x = self.norm1(x + self.norm4(self._sa_block(x, tgt_mask, tgt_key_padding_mask, x_embedding=tgt_embedding)))
             # x = self.norm2(x + self.norm5(self._mha_block(x, memory, memory_mask, memory_key_padding_mask,
@@ -347,7 +374,7 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
                                 # key_padding_mask=key_padding_mask,
                                 need_weights=CHECK_W)  # True for attention map
         if CHECK_W:
-            show_attn(w.detach().cpu().numpy())
+            show_attn(w.detach().cpu().numpy(), mode_cross2d=True)
         return self.dropout2_2(x)
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
@@ -676,6 +703,13 @@ class MyTransformer(nn.Transformer):
                 image_feature, image_positional_embedding,
                 DiagonalMask, JointConfMask,
                 )
+
+        if CHECK_VAR:
+            import pandas as pd
+            pd.set_option('display.max_rows', None)
+            df = pd.DataFrame(_variances, columns=['name', 'x', '_out'])
+            df['_out / x'] = df['_out'] / df['x']
+            print(df)
 
         to_return = [out, []]
         # main_out, (Opt)encoder out
