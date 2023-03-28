@@ -24,7 +24,7 @@ def _append_variance(*row):
     global _variances
     _variances += [tmp]
 
-CHECK_VAR = True
+CHECK_VAR = False
 
 def show_attn(attn, mode_cross2d=False):
     # attn.shape: (B, J, J)

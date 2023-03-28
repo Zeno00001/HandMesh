@@ -205,7 +205,9 @@ class DenseStack2(nn.Module):
         if self.ret_mid:
             return u3, u2, u1, d4
         else:
-            return u3, d4
+            # return u3, d4, us2  # 16x16, 256 feat
+            return u3, d4, us1  # 8x8, 512 feat
+            # return u3, d4
 
 
 @MODEL_REGISTRY.register()
@@ -242,6 +244,7 @@ class DenseStack_Conf_Backbone(nn.Module):
         self.thrink2 = conv_layer((out_channel + input_channel), input_channel)
         self.dense_stack2 = DenseStack2(input_channel, out_channel, final_upsample=False)
         self.mid_proj = conv_layer(1024, latent_size, 1, 1, 0, bias=False, bn=False, relu=False)
+        self.mid_proj2 = conv_layer(512, latent_size, 1, 1, 0, bias=False, bn=False, relu=False)  # match 8x8, 512 feat
         self.reduce = conv_layer(out_channel, kpts_num, 1, bn=False, relu=False)
         self.uvc_reg = nn.Sequential(linear_layer(latent_size, 128, bn=False), linear_layer(128, 64, bn=False),
                                     linear_layer(64, 3, bn=False, relu=False))
@@ -260,14 +263,16 @@ class DenseStack_Conf_Backbone(nn.Module):
         stack1_out_remap = self.stack1_remap(stack1_out)
         input2 = torch.cat((stack1_out_remap, thrink),dim=1)
         thrink2 = self.thrink2(input2)
-        stack2_out, stack2_mid = self.dense_stack2(thrink2)
+        # stack2_out, stack2_mid = self.dense_stack2(thrink2)
+        stack2_out, stack2_mid, stack2_8x8 = self.dense_stack2(thrink2)
         latent = self.mid_proj(stack2_mid)
+        feat8x8 = self.mid_proj2(stack2_8x8.detach())
         uvc_reg = self.uvc_reg(self.reduce(stack2_out).view(stack2_out.shape[0], 21, -1))
         # regress (21, 256) -> (21, 2)
         #      to (21, 256) -> (21, 3)
         # each 256 apply the same matrix, for 21 channels
 
-        return latent, uvc_reg
+        return latent, uvc_reg, feat8x8
         # pretrain backbone phase
         # res = {'joint_img': uvc_reg[:, :, :2], 'conf': uvc_reg[:, :, 2:]}
         # #                   (#, 21, 2)                 (#, 21, 1)

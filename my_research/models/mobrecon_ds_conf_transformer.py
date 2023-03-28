@@ -73,9 +73,10 @@ class MobRecon_DS_conf_Transformer(nn.Module):
         B, F, _, _, _ = x.shape
         x = rearrange(x, 'B F c h w -> (B F) c h w')
 
-        latent, pred2d_pt = self.backbone(x)  # (#, 256, 4, 4), (#, 21, 3)
+        # latent, pred2d_pt = self.backbone(x)  # (#, 256, 4, 4), (#, 21, 3)
+        latent, pred2d_pt, feat8x8 = self.backbone(x)  # (#, 256, 4, 4), (#, 21, 3)
         #! NEW frame_len
-        pred3d, pred_j3d = self.decoder3d(pred2d_pt, latent, frame_len=F)  # (#, 778, 3)
+        pred3d, pred_j3d = self.decoder3d(pred2d_pt, latent, frame_len=F, feat8x8=feat8x8)  # (#, 778, 3)
         # vert, joints
 
         out = {
@@ -193,7 +194,7 @@ class SequencialReg2DDecode3D(nn.Module):
         _ARCH = 'b33'  # b/d/e: base/ de/encoder only, 33: enc & dec layer counts
         _NORM = 'twice'  #  ['twice', 'once', 'first'], once/twice-> norm_last
         _DF = 'FX49F'
-        _CROSS_2_IMAGE = ['enc']
+        _CROSS_2_IMAGE = ['']
         self.transformer = get_transformer(
             self.latent_size, nhead=1, num_encoder_layers=int(_ARCH[1]), num_decoder_layers=int(_ARCH[2]),
             norm_first=   True  if _NORM == 'first' else False,
@@ -281,7 +282,7 @@ class SequencialReg2DDecode3D(nn.Module):
         plt.hist(conf)
         plt.show()
 
-    def forward(self, uvc, x, frame_len):
+    def forward(self, uvc, x, frame_len, feat8x8):
         '''
         uvc: [(B F) J 3] -> 3: [u v c]
         x  : [(B F) D H W]
@@ -305,13 +306,16 @@ class SequencialReg2DDecode3D(nn.Module):
         # self.show_conf_hist(conf)
         padding_mask = self.get_padding_mask(conf)
         uv_embed = uv_encoding(uv, feature_len=self.latent_size // 2)
-        image_uv_embed = image_uv_encoding(width=x.shape[2], feature_len=self.latent_size // 2).to(x.device)
+
+        CrossedFeatureSource_ = feat8x8  # or feat8x8
+
+        image_uv_embed = image_uv_encoding(width=CrossedFeatureSource_.shape[2], feature_len=self.latent_size // 2).to(x.device)
         # uv_embed = None
 
         x = self.de_layer_conv(x)  # change channel to self.latent_size
         # (BF, 256, 4, 4) -> (BF, 256 -3, 4, 4)
 
-        image_feature = rearrange(x, '(B F) C H W -> B F C H W', F=frame_len).detach()  # (B, F, 256, 4, 4)
+        image_feature = rearrange(CrossedFeatureSource_, '(B F) C H W -> B F C H W', F=frame_len)  # (B, F, 256, 4, 4)
         B, F = image_feature.shape[:2]
 
         x = self.index(x, uv).permute(0, 2, 1)  # [BF, 21, D=256-3]
