@@ -188,3 +188,20 @@ if __name__ == "__main__":
     # args.config_file = 'my_research/configs/mobrecon_ds_conf_transformer.yml'
     # args.check_exp = 'base_enc3_dec3_normtwice_reg_at_enc_DF_AR21Z_weightConf'
     main(args)
+
+    # training phase
+    import traceback
+    Errors = []
+    for _ in range(5):
+        try:
+            main(args)
+            print('Passed!')
+            break
+        except:
+            Errors += [traceback.format_exc()]
+            print('ERROR')
+
+    print(f'{len(Errors)} errors:')
+    for i, err in enumerate(Errors):
+        print(f'----------- error {i} -----------')
+        print(err, end='')
