@@ -4,12 +4,16 @@ MODEL:
   NAME: MobRecon_DS_conf_Transformer
   SPIRAL:
     TYPE: 'DSConv'
-  # RESUME: checkpoint_last.pt
+  RESUME: checkpoint_last.pt
 DATA:
   CONTRASTIVE: False
   FRAME_COUNTS: 8  # for seq of images
   # COLOR_AUG: False
   HANCO:
+    USE: False
+    ROOT: 'data/HanCo'
+    # ROT: 90
+  HANCO_EVAL:  # new evaluation partition
     USE: True
     ROOT: 'data/HanCo'
   COMPHAND:
@@ -17,14 +21,19 @@ DATA:
   FREIHAND:
     USE: False
 TRAIN:
-  DATASET: 'HanCo'  # dataset class name
-  EPOCHS: 38
-  BATCH_SIZE: 4
+  # DATASET: 'HanCo'  # dataset class name
+  DATASET: 'HanCo_Eval'
+  EPOCHS: 50  # 38
+  DECAY_STEP: [38, ]  # [30, ]
+  BATCH_SIZE: 20
   LR: 0.001
   GPU_ID: 0,
+  # GPU_ID: -1,  # test usage
 VAL:
-  DATASET: 'HanCo'
+  # DATASET: 'HanCo'
+  DATASET: 'HanCo_Eval'
   BATCH_SIZE: 1
 TEST:
-  DATASET: 'HanCo'
+  # DATASET: 'HanCo'
+  DATASET: 'HanCo_Eval'
   SAVE_PRED: False
