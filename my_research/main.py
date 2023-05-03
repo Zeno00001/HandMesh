@@ -96,8 +96,18 @@ def main(args):
             else:
                 model_path = osp.join(args.checkpoints_dir, cfg.MODEL.RESUME)
             checkpoint = torch.load(model_path, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            # model.load_state_dict(checkpoint['model_state_dict'])
+
+            missing, unexpected = model.load_state_dict(
+                checkpoint['model_state_dict'], strict=False
+            )
+            print(f'missing    params: {chr(10).join(missing)}')  # chr(10) == '\n'
+            print(f'unexpected params: {chr(10).join(unexpected)}')
+            try:  # TODO: mini bug: not load optimizer state if MISMATCH
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            except:
+                pass
+            # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             epoch = checkpoint['epoch'] + 1
             writer.print_str('Resume from: {}, start epoch: {}'.format(model_path, epoch))
             print('Resume from: {}, start epoch: {}'.format(model_path, epoch))
@@ -117,7 +127,7 @@ def main(args):
         input('[ERROR] wrong cfg PHASE while loading model')
 
     # data
-    kwargs = {"pin_memory": True, "num_workers": 4, "drop_last": True}  # num_worker: 8
+    kwargs = {"pin_memory": True, "num_workers": 3, "drop_last": True}  # num_worker: 8
     if cfg.PHASE in ['train',]:
         train_dataset = build_dataset(cfg, 'train', writer=writer)
         train_sampler = None
@@ -169,5 +179,27 @@ if __name__ == "__main__":
 
     args = CFGOptions().parse()
     # args.exp_name = 'test'
+    # args.config_file = 'my_research/configs/mobrecon_ds_conf_transformer_single.yml'
     # args.config_file = 'my_research/configs/mobrecon_ds.yml'
     main(args)
+
+    # import traceback
+    # Errors = []
+    # for _ in range(5):
+    #     try:
+    #         main(args)
+    #         print('Passed!')
+    #         break
+    #     except KeyboardInterrupt:
+    #         print('Keyboard interupt detected')
+    #         break
+    #     except:
+    #         Errors += [traceback.format_exc()]
+    #         # print('ERROR')
+    #         print(f'----------- error -----------')
+    #         print(Errors[-1], end='')
+
+    # print(f'{len(Errors)} errors:')
+    # for i, err in enumerate(Errors):
+    #     print(f'----------- error {i} -----------')
+    #     print(err, end='')
