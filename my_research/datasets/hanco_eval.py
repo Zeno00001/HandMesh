@@ -262,7 +262,7 @@ class HanCo_Eval(data.Dataset):
         elif self.phase == 'valid':
             return len(self.image_aug) * len(self.valid_seq) * 8
         elif self.phase == 'test':
-            return len(self.test_seq) * 8
+            return len(self.test_seq)  # * 8, reduce image counts from 74,856 to 9,357
 
     def __getitem__(self, idx):
         if self.phase == 'train':
@@ -292,7 +292,8 @@ class HanCo_Eval(data.Dataset):
             return aug_id * self.len_valid_seq_cam + \
                    self.valid_seq.index(seq_id) * 8 + cam_id
         elif self.phase == 'test':
-            return self.test_seq.index(seq_id) * 8 + cam_id
+            return self.test_seq.index(seq_id)
+            # return self.test_seq.index(seq_id) * 8 + cam_id
 
     def _inverse_compute_index(self, idx):
         ''' index -> (aug_id), seq_id, cam_id
@@ -308,8 +309,10 @@ class HanCo_Eval(data.Dataset):
             cam_id = idx % 8
             return aug_id, seq_id, cam_id
         elif self.phase == 'test':
-            seq_id = self.test_seq[int(idx / 8)] # No. ? in train_seq
-            cam_id = idx % 8
+            seq_id = self.test_seq[idx]
+            cam_id = 0
+            # seq_id = self.test_seq[int(idx / 8)] # No. ? in train_seq
+            # cam_id = idx % 8
             return seq_id, cam_id
 
     def get_training_sample(self, aug_id, seq_id, cam_id, start=None):
@@ -581,6 +584,9 @@ class HanCo_Eval(data.Dataset):
             'root': root_tensor,            # GT
 
             'calib': calib_tensor,
+
+            'seq_id': seq_id,               # record
+            'cam_id': cam_id,
         }
 
         return ret
@@ -763,6 +769,8 @@ if __name__ == '__main__':
 
     dataset = HanCo_Eval(cfg, phase='train', frame_counts=8)
     # dataset._check_correctness()
+    print(f'dataset len: {len(dataset)}')  # 952
+    print(f'sum to {sum(d["root"].shape[0] for d in dataset)} images')  # 74856, /8 =9357
     for i in range(len(dataset)):
         data = dataset[i]
         dataset.visualization(data, i)
