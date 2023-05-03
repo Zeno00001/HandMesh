@@ -177,6 +177,7 @@ def main(args):
     # input()
 
     # run
+    # torch.autograd.set_detect_anomaly(True)
     runner = Runner(cfg, args, model, train_loader, eval_loader, test_loader, optimizer, writer, device, board, start_epoch=epoch)
     runner.run()
 
@@ -186,8 +187,8 @@ if __name__ == "__main__":
     args = CFGOptions().parse()
     # args.exp_name = 'test'
     # args.config_file = 'my_research/configs/mobrecon_ds_conf_transformer.yml'
-    # args.check_exp = 'base_enc3_dec3_normtwice_reg_at_enc_DF_AR21Z_weightConf'
-    main(args)
+    # args.check_exp = 'score_b33_normT_RegEnc_FR70FF_RegDec05_scale_confWW_remove2D_50'
+    # main(args)
 
     # training phase
     import traceback
@@ -196,6 +197,9 @@ if __name__ == "__main__":
         try:
             main(args)
             print('Passed!')
+            break
+        except KeyboardInterrupt:
+            print('Keyboard interupt detected')
             break
         except:
             Errors += [traceback.format_exc()]
