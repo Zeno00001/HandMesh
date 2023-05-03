@@ -71,6 +71,8 @@ class Runner(object):
                 if val_loss < self.best_val_loss:
                     self.writer.save_checkpoint(self.model, self.optimizer, None, self.epoch, best=True)
                     self.best_test_loss = val_loss
+                # if self.epoch in [5, 10]:
+                #     self.writer.save_checkpoint(self.model, self.optimizer, None, self.epoch)
                 self.writer.save_checkpoint(self.model, self.optimizer, None, self.epoch, last=True)
             self.pred()
         elif self.cfg.PHASE == 'eval':
@@ -166,8 +168,13 @@ class Runner(object):
             forward_time += tf - ts
             losses = self.loss(verts_pred=out.get('verts'),
                                joint_img_pred=out['joint_img'],
+                               joint_conf_pred=out.get('joint_conf'),  # append conf prediciton
+                               joint_3d_pred=out.get('joints'),    # append joint prediction
+
                                verts_gt=data.get('verts'),
                                joint_img_gt=data['joint_img'],
+                               joint_3d_gt=data.get('joint_cam'),  # append joint root-relative
+
                                face=self.face,
                                aug_param=(None, data.get('aug_param'))[self.epoch>4],
                                bb2img_trans=data.get('bb2img_trans'),

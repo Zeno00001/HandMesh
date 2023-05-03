@@ -1,0 +1,29 @@
+VERSION: 0.1
+PHASE: 'eval'
+MODEL:
+  NAME: MobRecon_DS_conf_Transformer_Single
+  SPIRAL:
+    TYPE: 'DSConv'
+  RESUME: checkpoint_last.pt
+DATA:
+  CONTRASTIVE: False
+  FREIHAND:
+    USE: True
+    ROOT: 'data/FreiHAND'
+  COMPHAND:
+    USE: True
+    ROOT: 'data/CompHand'
+TRAIN:
+  DATASET: 'MultipleDatasets'
+  EPOCHS: 50  # 38
+  DECAY_STEP: [38, ]  # [30, ]
+  BATCH_SIZE: 64  # 32 for CONTRASTIVE
+  LR: 0.001
+  GPU_ID: 0,
+  # GPU_ID: -1,  # test usage
+VAL:
+  DATASET: 'Ge'
+  BATCH_SIZE: 1
+TEST:
+  DATASET: 'FreiHAND'
+  SAVE_PRED: False
