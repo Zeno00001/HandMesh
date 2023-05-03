@@ -81,6 +81,8 @@ class Runner(object):
             self.eval()
         elif self.cfg.PHASE == 'pred':
             self.pred()
+        elif self.cfg.PHASE == 'test':
+            self.test()  # evaluate on HanCo test set
         elif self.cfg.PHASE == 'demo':
             self.demo()
         else:
@@ -418,6 +420,203 @@ class Runner(object):
                 ], fo)
         self.writer.print_str('Dumped %d joints and %d verts predictions to %s' % (
             len(xyz_pred_list), len(verts_pred_list), os.path.join(self.args.work_dir, 'out', self.args.exp_name, f'{self.args.exp_name}.json')))
+
+    def test(self):
+        ''' evaluate on test set
+            all predictions and ground-truth are in the unit of "meter"
+        '''
+        self.writer.print_str('NEW SeqMode: TESTING ... Epoch {}/{}'.format(self.epoch, self.max_epochs))
+        self.model.eval()
+        forward_time = registration_time = scoring_time = 0
+        with torch.no_grad():
+            overall_joint_cam_errors = []
+            overall_verts_cam_errors = []
+            overall_pa_joint_cam_errors = []
+            overall_pa_verts_cam_errors = []
+
+            for step, data in enumerate(self.test_loader):
+                if self.board is None and step % 10 == 0:
+                    print(step, len(self.test_loader))
+
+                xyz_pred_list = []
+                verts_pred_list = []
+                image_width = data['img'].size(3) # in (B, F, 3, H, W)
+                frame_len = data['img'].size(1)
+                seq_id = data['seq_id'].item()
+
+                t = time.time()
+                data = self.phrase_data(data)
+
+                # save in scale of meter
+                prediction_path = os.path.join(self.args.out_dir, self.cfg.TEST.SAVE_DIR, f'{seq_id:04d}_0.npz') # cam: 0
+                if os.path.isfile(prediction_path):
+                    # skip if calculated already
+                    np_data = np.load(prediction_path)
+                    xyz_pred_list = np_data['joint_3d']
+                    verts_pred_list = np_data['verts_3d']
+                else:
+                    # data: (B, F, ...), where B=1 for testing
+                    out = self.seq_pred_one_clip(self.model, data['img'])
+                    forward_time += time.time() - t
+                    t = time.time()
+                    # out: {verts: (B=1, F, 778, 3), joint_img: (B=1,Ｆ，　２１，　２)}, and ignoring joint_conf, joints
+
+                    # all frames processing
+                    # get verts pred
+                    verts_pred = out['verts'][0].cpu().numpy() * 0.2  # into (F, 778, 3)
+                    # get mask pred
+                    poly = None
+                    # get uv pred
+                    joint_img_pred = out['joint_img'][0].cpu().numpy() * image_width  # into (F, 21, 2)
+
+                    # get calib data
+                    calib_info = data['calib'][0].cpu().numpy()  # into (F, 4, 4)
+
+                    # per frame processing
+                    for frame_i in range(frame_len):
+                        # frame pick
+                        f_verts_pred = verts_pred[frame_i]
+                        f_joint_img_pred = joint_img_pred[frame_i]
+                        f_calib_info = calib_info[frame_i]
+
+                        # registration
+                        f_verts_pred, align_state = registration(f_verts_pred, f_joint_img_pred, self.j_reg, f_calib_info, self.cfg.DATA.SIZE, poly=poly)
+                        # get joint_cam
+                        f_joint_cam_pred = mano_to_mpii(np.matmul(self.j_reg, f_verts_pred))
+                        # track data
+                        xyz_pred_list.append(f_joint_cam_pred)
+                        verts_pred_list.append(f_verts_pred)
+
+                        # 2D joints drawing
+                        if self.cfg.TEST.SAVE_PRED:
+                            draw = self.draw_results(data, out, {}, 0, aligned_verts=torch.from_numpy(verts_pred).float()[None, ...])[..., ::-1]
+                            cv2.imwrite(os.path.join(self.args.out_dir, self.cfg.TEST.SAVE_DIR, f'{step}.png'), draw)
+
+                    xyz_pred_list   = rearrange(xyz_pred_list, 'F J D -> F J D')  # into one numpy arr
+                    verts_pred_list = rearrange(verts_pred_list, 'F V D -> F V D')
+
+                    # save in scale of meter
+                    np.savez(prediction_path, joint_3d=xyz_pred_list, verts_3d=verts_pred_list)
+                    registration_time += time.time() - t
+                    t = time.time()
+
+                # get joint, verts prediction in cam coord \
+                #   in {xyz_pred_list}, {verts_pred_list}
+
+                # per frame scoring
+                # data['joint_cam']:    B=1 F J D   in GPU  in meter
+                # data['verts']:        B=1 F V D   in GPU  in meter
+                root_gt_list = data['root'][0].cpu().numpy()
+                root_gt_list = rearrange(root_gt_list, 'F D -> F () D')
+                xyz_gt_list   = data['joint_cam'][0].cpu().numpy() + root_gt_list
+                verts_gt_list = data['verts'][0].cpu().numpy() + root_gt_list
+                xyz_pred_list, xyz_gt_list     = xyz_pred_list * 1000, xyz_gt_list * 1000
+                verts_pred_list, verts_gt_list = verts_pred_list * 1000, verts_gt_list * 1000
+                for frame_i in range(frame_len):
+                    # xyz_pred_list:    F J D   in CPU  in millimeter
+                    # verts_pred_list:  F V D   in CPU  in millimeter
+                    # xyz_gt_list:      F J D   in CPU  in millimeter
+                    # verts_gt_list:    F V D   in CPU  in millimeter
+                    f_joint_cam_pred = xyz_pred_list[frame_i]
+                    f_joint_cam_gt   = xyz_gt_list[frame_i]
+                    f_verts_cam_pred = verts_pred_list[frame_i]
+                    f_verts_cam_gt   = verts_gt_list[frame_i]
+                    f_joint_cam_align = rigid_align(f_joint_cam_pred, f_joint_cam_gt)
+                    f_verts_cam_align = rigid_align(f_verts_cam_pred, f_verts_cam_gt)
+                    overall_joint_cam_errors.append(
+                        np.sqrt(np.sum(np.square(f_joint_cam_gt - f_joint_cam_pred), axis=1))
+                    )
+                    overall_pa_joint_cam_errors.append(
+                        np.sqrt(np.sum(np.square(f_joint_cam_gt - f_joint_cam_align), axis=1))
+                    )
+                    overall_verts_cam_errors.append(
+                        np.sqrt(np.sum(np.square(f_verts_cam_gt - f_verts_cam_pred), axis=1))
+                    )
+                    overall_pa_verts_cam_errors.append(
+                        np.sqrt(np.sum(np.square(f_verts_cam_gt - f_verts_cam_align), axis=1))
+                    )
+
+            mpjpe = np.array(overall_joint_cam_errors).mean()
+            pampjpe = np.array(overall_pa_joint_cam_errors).mean()
+            mpvpe = np.array(overall_verts_cam_errors).mean()
+            pampvpe = np.array(overall_pa_verts_cam_errors).mean()
+
+            print(f'MPJPE: {mpjpe} mm, PA-MPJPE: {pampjpe} mm')
+            print(f'MPVPE: {mpvpe} mm, PA-MPVPE: {pampvpe} mm')
+
+            score_path = os.path.join(self.args.out_dir, self.cfg.TEST.SAVE_DIR, f'score.txt')
+            with open(score_path, 'w') as fo:
+                fo.write(f'MPJPE: {mpjpe} mm\n')
+                fo.write(f'PA-MPJPE: {pampjpe} mm\n')
+                fo.write(f'MPVPE: {mpvpe} mm\n')
+                fo.write(f'PA-MPVPE: {pampvpe} mm\n')
+
+            scoring_time += time.time() - t
+            print(f'\nForTime: {forward_time}')
+            print(f'RegisTime: {registration_time}')
+            print(f'ScoreTime: {scoring_time}')
+
+        # end of test()
+
+    def seq_pred_one_clip(self, model, data, win_len=8, win_stride=4):
+        '''
+        ! this function can handle default window value only for now !
+
+        using {model} to inference all images in {clip_imgs} and output prediction result from {model}
+        @ model:        the nn.Module of overall model                 send to GPU
+        @ clip_imgs:    the nn.Tensor with shape (1, F, 3, 128, 128)   send to GPU
+        @ return:       the dict of nn.Tensor                               in GPU
+            out = {
+                'verts': (1, F, 778, 3),
+                'joint_img': (1, F, 21, 2)
+            }
+
+        example
+        [ 1 2 3 4 5 6 7 8 9 0 1 2 3 ], with default window
+        | v v v v v v - - |                 in first window prediction
+                | - - v v v v - - |         in second window prediction
+                  | - - - - - v v v |       in last window prediction
+        '''
+        # model in              : (B=1, F=8, 3, 128, 128)
+        # model out['verts']    : (B=1, F=8, 778, 3)
+        # model out['joint_img']: (B=1, F=8, 21, 2)
+        clip_len = data.shape[1]
+        out = {
+            'verts': [None] * clip_len,
+            'joint_img': [None] * clip_len,
+        }
+        win_start = 0
+        while win_start + win_len < clip_len:
+            win_data = data[:, win_start : win_start + 8]  # first ':' to reserve Batch dimension
+            win_out = model(win_data)
+            win_out_verts = win_out['verts'][0]         # into (F=8, 778, 3)
+            win_out_joint_img = win_out['joint_img'][0] # into (F=8, 21, 3)
+
+            if win_start == 0:
+                out['verts'][0],     out['verts'][1]     = win_out_verts[0],     win_out_verts[1]
+                out['joint_img'][0], out['joint_img'][1] = win_out_joint_img[0], win_out_joint_img[1]
+            for i in range(2, 6):
+                out['verts'][win_start + i]     = win_out_verts[i]
+                out['joint_img'][win_start + i] = win_out_joint_img[i]
+
+            win_start += win_stride
+
+        if out['verts'][-1] is None:
+            win_data = data[:, clip_len-8:]
+            win_out = model(win_data)
+            win_out_verts = win_out['verts'][0]
+            win_out_joint_img = win_out['joint_img'][0]
+            for i in range(1, 9):
+                # [len-1, len-2, ..., len-8]
+                if out['verts'][clip_len - i] is not None:
+                    break
+                # else
+                out['verts'][clip_len - i]     = win_out_verts[8 - i]
+                out['joint_img'][clip_len - i] = win_out_joint_img[8 - i]
+
+        out['verts']     = rearrange(out['verts'], 'F V D -> () F V D')
+        out['joint_img'] = rearrange(out['joint_img'], 'F J D -> () F J D')
+        return out
 
     def set_demo(self, args):
         import pickle

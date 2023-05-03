@@ -112,7 +112,7 @@ def main(args):
         else:
             epoch = 0
             writer.print_str('Train from 0 epoch')
-    elif cfg.PHASE in ['eval', 'pred', 'demo']:
+    elif cfg.PHASE in ['eval', 'pred', 'demo', 'test']: # edit here
         epoch = 0
         if len(cfg.MODEL.RESUME.split('/')) > 1:
             model_path = cfg.MODEL.RESUME
@@ -150,7 +150,7 @@ def main(args):
         print('Need not eval_loader')
         eval_loader = None
 
-    if cfg.PHASE in ['train', 'pred']:
+    if cfg.PHASE in ['train', 'pred', 'test']: # edit here
         test_dataset = build_dataset(cfg, phase='test', writer=writer)  # not need to provide frame_counts while testing
         test_loader = DataLoader(test_dataset, batch_size=cfg.TEST.BATCH_SIZE, shuffle=False, **kwargs)
     else:
