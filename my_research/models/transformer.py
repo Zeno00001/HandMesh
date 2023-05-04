@@ -95,6 +95,10 @@ class MyEncoderLayer(nn.TransformerEncoderLayer):
             # _ca = norm5_2( mha_2( x, mem
             # x   = norm2_2( x+ _ca
 
+        # if ReWeighting:
+        #     self.x_weight_bias = nn.Parameter(torch.tensor([1, 0], dtype=torch.float32))
+        #     self.embed_weight_bias = nn.Parameter(torch.tensor([1, 0], dtype=torch.float32))
+
     def forward(self, src: Tensor, src_mask: Optional[Tensor] = None,
         src_key_padding_mask: Optional[Tensor] = None,
         x_embedding: Optional[Tensor] = None,  # ! NEW joint embedding
@@ -269,6 +273,11 @@ class MyDecoderLayer(nn.TransformerDecoderLayer):
             # _ca = norm5_2( mha_2( x, mem
             # x   = norm2_2( x+ _ca
 
+        # if ReWeighting:
+        #     self.weight_bias = nn.ParameterDict({
+        #         e: nn.Parameter(torch.tensor([1, 0], dtype=torch.float32)) for e in ['sa-tgt', 'sa-tgt_embed',
+        #                                                                             'ca-tgt', 'ca-tgt_embed', 'ca-mem', 'ca-mem_embed']
+        #     })
 
     def forward(self, tgt: Tensor, memory: Tensor, tgt_mask: Optional[Tensor] = None, memory_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
@@ -462,6 +471,16 @@ class MyTransformer(nn.Transformer):
         self.matrix = matrix  # 49 to 21 matrix in SequencialReg2DDecode3D
         self.EncCross2ImageFeat = EncAddCrossAttn2ImageFeat  # Additional CrossAttn Layer in Encoder
         self.DecCross2ImageFeat = DecAddCrossAttn2ImageFeat  # Additional CrossAttn Layer in Decoder
+
+        # params
+        # balancing encodings
+        # if ReWeighting:
+        #     encodings = ['enc-2D pos', 'enc-joint',              'enc-serial',
+        #                  'dec-2D pos', 'dec-joint', 'dec-verts', 'dec-serial']
+        #     self.encoding_w_b = nn.ParameterDict({
+        #         e: nn.Parameter(torch.tensor([1, 0], dtype=torch.float32)) for e in encodings
+        #     })
+        # balancing token and encoding-> each encoder
 
     def forward_old(self, src: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,  # ! remove tgt param
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
@@ -1054,6 +1073,16 @@ class MyTransformer(nn.Transformer):
         return masks
 
 
+# supplement of transformer, encoder, decoder
+def standardize(x, additional_weight_bias = None):
+    # return x  # ! short cut of standardize(x) -> identity(x)
+    std = x.std()
+    mean = x.mean()
+    std_x = (x - mean) / (std + 1e-8)
+    if additional_weight_bias is not None:
+        return std_x * additional_weight_bias[0] + additional_weight_bias[1]
+    else:
+        return std_x
 
 def test_correctness_of_new_transformer():
     device = torch.device('cuda:0')
