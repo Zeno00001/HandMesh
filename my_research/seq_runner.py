@@ -175,7 +175,7 @@ class Runner(object):
             forward_time += tf - ts
             losses = self.loss(verts_pred=out.get('verts'),
                                joint_img_pred=out['joint_img'],
-                               joint_conf_pred=out['joint_conf'],  # append conf prediciton
+                               joint_conf_pred=out.get('joint_conf'),  # append conf prediciton
                                joint_3d_pred=out.get('joints'),    # append joint prediction
 
                                verts_gt=data.get('verts'),
