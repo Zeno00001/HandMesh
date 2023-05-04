@@ -252,7 +252,9 @@ class DenseStack_Conf_Backbone(nn.Module):
         if pretrain:
             cur_dir = os.path.dirname(os.path.realpath(__file__))
             weight = torch.load(os.path.join(cur_dir, '../out/densestack_conf.pth'))
-            self.load_state_dict(weight, strict=False)
+            missing, unexpected = self.load_state_dict(weight, strict=False)
+            print(f'missing    params: {chr(10).join(missing)}')  # chr(10) == '\n'
+            print(f'unexpected params: {chr(10).join(unexpected)}')
             print('Load pre-trained weight: densestack_conf.pth')
 
     def forward(self, x):

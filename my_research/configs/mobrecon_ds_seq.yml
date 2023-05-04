@@ -1,0 +1,35 @@
+VERSION: 0.1
+PHASE: 'test'
+MODEL:
+  NAME: MobRecon_DS_SEQ
+  SPIRAL:
+    TYPE: 'DSConv'
+  RESUME: checkpoint_best.pt
+DATA:
+  CONTRASTIVE: False
+  FRAME_COUNTS: 8  # for seq of images
+  HANCO:
+    USE: False
+    ROOT: 'data/HanCo'
+    # ROT: 90
+  HANCO_EVAL:  # new evaluation partition
+    USE: True
+    ROOT: 'data/HanCo'
+  COMPHAND:
+    USE: False
+  FREIHAND:
+    USE: False
+TRAIN:
+  DATASET: 'HanCo_Eval'
+  EPOCHS: 50  # 38
+  DECAY_STEP: [38, ]  # [30, ]
+  # BATCH_SIZE: 20
+  BATCH_SIZE: 14  # capable to rum in 11G memory
+  LR: 0.001
+  GPU_ID: 0,
+VAL:
+  DATASET: 'HanCo_Eval'
+  BATCH_SIZE: 1
+TEST:
+  DATASET: 'HanCo_Eval'
+  SAVE_PRED: False
