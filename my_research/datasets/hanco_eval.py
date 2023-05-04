@@ -752,6 +752,228 @@ class HanCo_Eval(data.Dataset):
 
         print(f'min frames: {min_frame_counts}, at index: {min_index}')
 
+    def _visual_tool_for_paper(self, data, idx, start=0, frame_len=8, save_path='', **preds):
+        '''
+        data: dataset[i]
+        visualize frames in {data} in [{start} : {start}+{frame_len}]
+        visualize each pred in rows compare to GT
+
+        preds[key] = {
+            'verts_3d': verts pred(F, 778, 3), 'joint_3d': joints pred(F, 21, 3)
+        } in numpy
+        '''
+        from matplotlib import pyplot as plt
+        from my_research.tools.vis import perspective
+        from utils.draw3d import draw_mesh
+
+        face = np.load(os.path.join(cfg.MODEL.MANO_PATH, 'right_faces.npy'))
+        torch.from_numpy(face).long()
+
+        ours = preds.get('ours')
+        mobrecon = preds.get('mobrecon')
+
+        Cols = frame_len + 1
+        Rows = 7
+        Tasks = ['joint', 'verts']
+        # fig = plt.figure(figsize=(18, 8))
+        fig = plt.figure(figsize=(15, 12))
+
+        RowTitles = [
+            'Input',
+            'Ground Truth\n      -> Joint',
+            'MobRecon\n      -> Joint',
+            'Ours\n      -> Joint',
+            'Ground Truth\n      -> Vertex',
+            'MobRecon\n      -> Vertex',
+            'Ours\n      -> Vertex',
+        ]
+        Rows = len(RowTitles)
+
+        for r, row_text in enumerate(RowTitles):
+            ax = plt.subplot(Rows, Cols, Cols*r + 1)
+            ax.text(0, 0.5, row_text, fontsize=14)
+            ax.axis('off')
+
+        for i in range(1, Cols):
+            img = inv_base_tranmsform(data['img'][start + i].numpy())
+            root = data['root'][start + i].numpy()
+
+            img_data = {}
+
+            # show input, img_data['input']
+            if True:
+                img_data['input'] = img
+
+            # show gt joint, img_data['gt-joint']
+            if True:
+                xyz = data['joint_cam'][start + i].numpy()
+                xyz = xyz * 0.2 + root
+                proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), data['calib'][start + i].unsqueeze(0))[0].numpy().T
+                vis_joint_img = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
+                                                        img.copy(), MPIIHandJoints, thickness=2)
+                img_data['gt-joint'] = vis_joint_img
+
+            # show gt verts, img_data['gt-verts']
+            if True:
+                vert = data['verts'][start + i].numpy()
+                vert = vert * 0.2 + root
+                # visualize mesh: 1
+                # proj_vert = perspective(torch.from_numpy(vert).permute(1, 0).unsqueeze(0), data['calib'][start + i].unsqueeze(0))[0].numpy().T
+                # ax.imshow(img)
+                # plt.plot(proj_vert[:, 0], proj_vert[:, 1], 'o', color='red', markersize=1)
+
+                # visualize mesh: 2
+                img2 = img.copy()
+
+                img2 = draw_mesh(img2[..., ::-1], data['calib'][start + i, :3, :3].numpy(), vert, face)
+                img2 = img2[..., :3][..., ::-1]
+
+                # visualize joint: 1
+                # xyz = data['joint_cam'][start + i].numpy()
+                # xyz = xyz * 0.2 + root
+                # proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), data['calib'][start + i].unsqueeze(0))[0].numpy().T
+                # img2 = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
+                #                                img2.copy(), MPIIHandJoints, thickness=2)
+
+                img_data['gt-verts'] = img2
+
+            # show mobrecon joint, img_data['mob-joint']
+            if mobrecon is not None and 'joint' in Tasks:
+                vert = mobrecon['verts'][start + i]
+                xyz = mobrecon['joint'][start + i].astype('float32')
+
+                img2 = img.copy()
+                proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), data['calib'][start + i].unsqueeze(0))[0].numpy().T
+                img2 = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
+                                               img2.copy(), MPIIHandJoints, thickness=2)
+
+                img_data['mob-joint'] = img2
+
+            # show mobrecon verts, img_data['mob-verts']
+            if mobrecon is not None and 'verts' in Tasks:
+                # ax = plt.subplot(Rows, Cols, Cols*4 + i+1)
+                vert = mobrecon['verts'][start + i]
+                xyz = mobrecon['joint'][start + i].astype('float32')
+
+                # --- re-rooted
+                # vert = vert - xyz[0:1] + root
+                # xyz = xyz - xyz[0:1] + root
+                # --- re-rooted
+                img2 = img.copy()
+
+                img2 = draw_mesh(img2[..., ::-1], data['calib'][start + i, :3, :3].numpy(), vert, face)
+                img2 = img2[..., :3][..., ::-1]
+
+                # proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), data['calib'][start + i].unsqueeze(0))[0].numpy().T
+                # img2 = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
+                #                                img2.copy(), MPIIHandJoints, thickness=2)
+
+                img_data['mob-verts'] = img2
+
+            # show ours joint, img_data['our-joint']
+            if ours is not None and 'joint' in Tasks:
+                vert = ours['verts'][start + i]
+                xyz = ours['joint'][start + i].astype('float32')
+                img2 = img.copy()
+                proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), data['calib'][start + i].unsqueeze(0))[0].numpy().T
+                img2 = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
+                                               img2.copy(), MPIIHandJoints, thickness=2)
+
+                img_data['our-joint'] = img2
+
+            # show ours verts, img_data['our-verts']
+            if ours is not None and 'verts' in Tasks:
+                vert = ours['verts'][start + i]
+                xyz = ours['joint'][start + i].astype('float32')
+
+                # --- re-rooted
+                # vert = vert - xyz[0:1] + root
+                # xyz = xyz - xyz[0:1] + root
+                # --- re-rooted
+                img2 = img.copy()
+
+                img2 = draw_mesh(img2[..., ::-1], data['calib'][start + i, :3, :3].numpy(), vert, face)
+                img2 = img2[..., :3][..., ::-1]
+
+                # img2 = img.copy()
+                # proj3d = perspective(torch.from_numpy(xyz).permute(1, 0).unsqueeze(0), data['calib'][start + i].unsqueeze(0))[0].numpy().T
+                # img2 = vc.render_bones_from_uv(np.flip(proj3d[:, :2], axis=-1),
+                #                                img2.copy(), MPIIHandJoints, thickness=2)
+
+                img_data['our-verts'] = img2
+
+            img_list_order = [
+                img_data['input'],
+                img_data['gt-joint'],
+                img_data['mob-joint'],
+                img_data['our-joint'],
+                img_data['gt-verts'],
+                img_data['mob-verts'],
+                img_data['our-verts'],
+            ]
+
+            for r in range(Rows):
+                ax = plt.subplot(Rows, Cols, Cols*r + i+1)
+                ax.imshow(img_list_order[r])
+                ax.axis('off')
+
+        seq_id, cam_id = self._inverse_compute_index(idx)
+        title = f'HanCo  |  folder: rgb  |  seq: {seq_id}  |  cam: {cam_id}  |  frame_start: {start}'
+
+        plt.subplots_adjust(
+            left=0.02,
+            bottom=0.02,
+            right=0.98,
+            top=0.95,
+            # left=0.125,
+            # bottom=0.1, 
+            # right=0.9, 
+            # top=0.9, 
+            wspace=0.02, 
+            hspace=0.02
+        )
+
+        fig.suptitle(title)
+        # plt.show()
+        plt.savefig(save_path)
+
+    def _reference(self):
+        ''' show compare test data in {seq_pick}, {start} inside
+        '''
+        from os import path as osp
+        work_dir = osp.dirname(osp.dirname(osp.realpath(__file__)))
+        work_dir = osp.join(work_dir, 'out', 'HanCo_Eval', 'test')
+        # print(work_dir)
+
+        seq_pick, start = 466, 31
+        # seq_pick, start = 277, 37
+        start -= 3
+
+        # filename = f'0101_0.npz'
+        filename = f'{seq_pick:04d}_0.npz'
+
+        Our = np.load(osp.join(work_dir, '..', 'score_b33_normT_RegEnc_FR70FF_RegDec05_scale_confWW_remove2D_50', 'test', filename))
+        Mob = np.load(osp.join(work_dir, '..', 'score_mobrecon_densestack', 'test', filename))
+        preds = {
+            'ours': Our,
+            'mobrecon': Mob,
+        }
+        for k in preds:
+            preds[k] = {
+                'verts': preds[k]['verts_3d'],
+                'joint': preds[k]['joint_3d'],
+            }
+
+        # dataset = HanCo_Eval(cfg, phase='test', frame_counts=8)
+        # self = dataset
+        idx = self._compute_index(0, seq_pick, 0)
+
+        data = self[idx]
+        # k = data['calib'][0][:3, :3] # 4x4 calib into 3x3 K
+        self._visual_tool_for_paper(data, idx, start=start, frame_len=8, \
+                                       save_path=os.path.join(work_dir, f'test_{seq_pick}-{start+3}.png'), \
+                                       **preds,
+                                      )
 
 if __name__ == '__main__':
     """Test the dataset
@@ -767,26 +989,24 @@ if __name__ == '__main__':
     # cfg.DATA.COLOR_AUG = False
     # cfg.DATA.HANCO.ROT = 0
 
-    dataset = HanCo_Eval(cfg, phase='train', frame_counts=8)
-    # dataset._check_correctness()
-    print(f'dataset len: {len(dataset)}')  # 952
-    print(f'sum to {sum(d["root"].shape[0] for d in dataset)} images')  # 74856, /8 =9357
-    for i in range(len(dataset)):
-        data = dataset[i]
-        dataset.visualization(data, i)
-    index = dataset._compute_index(0, 2, 3)  # 1st seq in validation: 75
-    # index = 100
-
-    print(f'Show dataset[{index}]')
-    data = dataset[index] # get 'rgb', seq:2, cam:3
-
-    dataset.visualization(data, index)
-
-    # for i in range(0, len(dataset), len(dataset)//10):
-    #     print(i)
-    #     data = dataset.__getitem__(i)
+    # Check correctness of train split
+    # dataset = HanCo_Eval(cfg, phase='train', frame_counts=8)
+    # # dataset._check_correctness()
+    # print(f'dataset len: {len(dataset)}')  # 952
+    # print(f'sum to {sum(d["root"].shape[0] for d in dataset)} images')  # 74856, /8 =9357
+    # for i in range(len(dataset)):
+    #     data = dataset[i]
     #     dataset.visualization(data, i)
+    # index = dataset._compute_index(0, 2, 3)  # 1st seq in validation: 75
+    # # index = 100
 
-    # idx = 1090
-    # data = dataset[idx]
-    # dataset.visualization(data, idx)
+    # print(f'Show dataset[{index}]')
+    # data = dataset[index] # get 'rgb', seq:2, cam:3
+
+    # dataset.visualization(data, index)
+
+    # Check visualize results of test split
+
+    dataset = HanCo_Eval(cfg, phase='test', frame_counts=8)
+    # print(dataset.test_seq)
+    dataset._reference()
