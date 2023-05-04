@@ -750,18 +750,19 @@ if __name__ == '__main__':
     from my_research.main import setup
     from options.cfg_options import CFGOptions
 
-    # args = CFGOptions().parse()
-    # args.config_file = 'my_research/configs/mobrecon_rs.yml'
-    # cfg = setup(args)
-    from my_research.configs.config import get_cfg
-    cfg = get_cfg()
-    cfg.DATA.COLOR_AUG = False
-    cfg.DATA.HANCO.ROT = 0
+    args = CFGOptions().parse()
+    args.config_file = 'my_research/configs/mobrecon_ds_conf_transformer.yml'
+    cfg = setup(args)
+    # from my_research.configs.config import get_cfg
+    # cfg = get_cfg()
+    # cfg.DATA.COLOR_AUG = False
+    # cfg.DATA.HANCO.ROT = 0
 
     dataset = HanCo(cfg, phase='train', frame_counts=8)
-    dataset._check_correctness()
+    # dataset._check_correctness()
     for i in range(len(dataset)):
         data = dataset[i]
+        dataset.visualization(data, i)
     index = dataset._compute_index(0, 2, 3)  # 1st seq in validation: 75
     # index = 100
 
