@@ -512,6 +512,11 @@ class Runner(object):
                 verts_gt_list = data['verts'][0].cpu().numpy() + root_gt_list
                 xyz_pred_list, xyz_gt_list     = xyz_pred_list * 1000, xyz_gt_list * 1000
                 verts_pred_list, verts_gt_list = verts_pred_list * 1000, verts_gt_list * 1000
+
+                StoreMPVPEInEachFrame = False  # stores MPVPE or MPJPE in `exp_name/exp/`
+                if StoreMPVPEInEachFrame:
+                    frame_mpvpe = []
+                    frame_mpvpe_rooted = []
                 for frame_i in range(frame_len):
                     # xyz_pred_list:    F J D   in CPU  in millimeter
                     # verts_pred_list:  F V D   in CPU  in millimeter
@@ -535,6 +540,31 @@ class Runner(object):
                     overall_pa_verts_cam_errors.append(
                         np.sqrt(np.sum(np.square(f_verts_cam_gt - f_verts_cam_align), axis=1))
                     )
+
+                    if StoreMPVPEInEachFrame:
+                        # frame_mpvpe.append(
+                        #     np.mean(np.sqrt(np.sum(np.square(f_verts_cam_gt - f_verts_cam_pred), axis=1)))
+                        # )  # avg mpvpe of the frame
+                        # # re-rooted
+                        # f_verts_cam_gt -= f_joint_cam_gt[0:1]
+                        # f_verts_cam_pred -= f_joint_cam_pred[0:1]
+                        # frame_mpvpe_rooted.append(
+                        #     np.mean(np.sqrt(np.sum(np.square(f_verts_cam_gt - f_verts_cam_pred), axis=1)))
+                        # )
+
+                        frame_mpvpe.append(
+                            np.mean(np.sqrt(np.sum(np.square(f_joint_cam_gt - f_joint_cam_pred), axis=1)))
+                        )  # avg mpjpe of the frame
+                        # re-rooted
+                        f_joint_cam_gt -= f_joint_cam_gt[0:1]
+                        f_joint_cam_pred -= f_joint_cam_pred[0:1]
+                        frame_mpvpe_rooted.append(
+                            np.mean(np.sqrt(np.sum(np.square(f_joint_cam_gt - f_joint_cam_pred), axis=1)))
+                        )
+
+                if StoreMPVPEInEachFrame:
+                    mpvpe_path = os.path.join(self.args.out_dir, 'exps', f'{seq_id:04d}_0.npz') # cam: 0
+                    np.savez(mpvpe_path, not_rooted=np.array(frame_mpvpe), rooted=np.array(frame_mpvpe_rooted))  # 1-d array
 
             mpjpe = np.array(overall_joint_cam_errors).mean()
             pampjpe = np.array(overall_pa_joint_cam_errors).mean()
