@@ -1,10 +1,10 @@
 VERSION: 0.1
-PHASE: 'train'
+PHASE: 'test'
 MODEL:
   NAME: MobRecon_DS_conf_Transformer
   SPIRAL:
     TYPE: 'DSConv'
-  RESUME: checkpoint_last.pt
+  RESUME: checkpoint_best.pt
 DATA:
   CONTRASTIVE: False
   FRAME_COUNTS: 8  # for seq of images
@@ -25,7 +25,7 @@ TRAIN:
   DATASET: 'HanCo_Eval'
   EPOCHS: 50  # 38
   DECAY_STEP: [38, ]  # [30, ]
-  BATCH_SIZE: 20
+  BATCH_SIZE: 14
   LR: 0.001
   GPU_ID: 0,
   # GPU_ID: -1,  # test usage

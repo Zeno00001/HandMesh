@@ -187,7 +187,7 @@ if __name__ == "__main__":
     args = CFGOptions().parse()
     # args.exp_name = 'test'
     # args.config_file = 'my_research/configs/mobrecon_ds_conf_transformer.yml'
-    # args.check_exp = 'score_b33_normT_RegEnc_FR70FF_RegDec05_scale_confWW_remove2D_50'
+    # args.check_exp = 'score_b33_normT_RegEnc_FR70FF_RegDec05_scale_confWW_50'
     # main(args)
 
     # training phase
