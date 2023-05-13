@@ -1,0 +1,31 @@
+VERSION: 0.1
+PHASE: 'pred'
+MODEL:
+  NAME: MobRecon_DS_Angle
+  SPIRAL:
+    TYPE: 'DSConv'
+  RESUME: checkpoint_last.pt
+DATA:
+  CONTRASTIVE: True
+  FREIHAND_ANGLE:
+    USE: True
+    ROOT: 'data/FreiHAND'
+  FREIHAND:
+    USE: False
+    ROOT: 'data/FreiHAND'
+  COMPHAND:
+    USE: False
+    ROOT: 'data/CompHand'
+TRAIN:
+  DATASET: 'FreiHAND_Angle'
+  EPOCHS: 90  # 38
+  DECAY_STEP: [75, ]  # [30, ]
+  BATCH_SIZE: 32
+  LR: 0.001
+  GPU_ID: 0,
+VAL:
+  DATASET: 'Ge'
+  BATCH_SIZE: 1
+TEST:
+  DATASET: 'FreiHAND_Angle'
+  SAVE_PRED: False

@@ -78,7 +78,10 @@ class Runner(object):
         elif self.cfg.PHASE == 'eval':
             self.eval()
         elif self.cfg.PHASE == 'pred':
-            self.pred()
+            if self.cfg.TRAIN.DATASET == 'FreiHAND_Angle':  # output negative head result
+                self.pred_negative()
+            else:
+                self.pred()
         elif self.cfg.PHASE == 'demo':
             self.demo()
         else:
@@ -154,6 +157,9 @@ class Runner(object):
     def train(self):
         self.writer.print_str('TRAINING ..., Epoch {}/{}'.format(self.epoch, self.max_epochs))
         self.model.train()
+        if self.cfg.TRAIN.DATASET == 'FreiHAND_Angle':
+            # freeze operation for BN.running_mean... in negative predictor
+            self.model._eval_bn_layers()
         total_loss = 0
         forward_time = 0.
         backward_time = 0.
@@ -174,6 +180,9 @@ class Runner(object):
                                verts_gt=data.get('verts'),
                                joint_img_gt=data['joint_img'],
                                joint_3d_gt=data.get('joint_cam'),  # append joint root-relative
+
+                               negative_pred=out.get('negative'),  # supplement for negative thumb
+                               negative_gt=data.get('negative'),
 
                                face=self.face,
                                aug_param=(None, data.get('aug_param'))[self.epoch>4],
@@ -366,6 +375,58 @@ class Runner(object):
         self.writer.print_str('Dumped %d joints and %d verts predictions to %s' % (
             len(xyz_pred_list), len(verts_pred_list), os.path.join(self.args.work_dir, 'out', self.args.exp_name, f'{self.args.exp_name}.json')))
 
+    def pred_negative(self):
+        self.writer.print_str('PREDICING ... Epoch {}/{}'.format(self.epoch, self.max_epochs))
+        self.model.eval()
+        from utils.vis import registration, map2uv, inv_base_tranmsform
+        from utils.draw3d import save_a_image_with_mesh_joints
+        from utils.read import save_mesh
+        self.set_demo(self.args)
+
+        InferenceTestingImages = False
+        HeadCount = 2
+        heads_negativeness = [[] for _ in range(HeadCount+1)]
+        counter = 0
+        with torch.no_grad():
+            for step, data in enumerate(self.test_loader):
+                if self.board is None and step % 100 == 0:
+                    print(step, len(self.test_loader))
+                data = self.phrase_data(data)
+                out = self.model(data['img'])
+
+                # out['negative'].shape = (B, 2), 2 heads
+                for i in range(HeadCount):
+                    heads_negativeness[i] += [torch.sigmoid(out['negative'][0, i]).cpu().numpy()]
+                heads_negativeness[HeadCount] += [data['negative'][0].cpu().numpy()]
+
+                if torch.mean(torch.sigmoid(out['negative'][0, :])) > 0.5:
+                    if data['negative'][0] == 1:
+                        counter += 1
+
+                if InferenceTestingImages:
+                    image = inv_base_tranmsform(data['img'][0].cpu().numpy())
+                    mask_pred = np.zeros([data['img'].size(3), data['img'].size(2)])
+                    poly = None
+                    # vertex
+                    pred = out['verts'][0] if isinstance(out['verts'], list) else out['verts']
+                    vertex = (pred[0].cpu() * self.std.cpu()).numpy()
+                    uv_pred = out['joint_img']
+                    K = data['calib'][0][:3, :3].cpu().numpy()
+                    if uv_pred.ndim == 4:
+                        uv_point_pred, uv_pred_conf = map2uv(uv_pred.cpu().numpy(), (data['img'].size(2), data['img'].size(3)))
+                    else:
+                        uv_point_pred, uv_pred_conf = (uv_pred * data['img'].size(2)).cpu().numpy(), [None,]
+                    vertex, align_state = registration(vertex, uv_point_pred[0], self.j_regressor, K, data['img'].size(2), uv_conf=uv_pred_conf[0], poly=poly)
+
+                    vertex2xyz = mano_to_mpii(np.matmul(self.j_regressor, vertex))
+
+                    save_a_image_with_mesh_joints(image[..., ::-1], mask_pred, poly, K, vertex, self.face, uv_point_pred[0], vertex2xyz,
+                                                os.path.join(self.args.out_dir, 'test', f'{step+2:06}' + '_plot.jpg'))
+        negative_np = np.array(heads_negativeness).transpose()
+        negative_path = os.path.join(self.args.out_dir, f'negative.csv')
+        np.savetxt(negative_path, negative_np, delimiter=',')
+        print(f'{counter} / {len(self.test_loader)}...')
+
     def set_demo(self, args):
         import pickle
         with open(os.path.join(args.work_dir, '../template/MANO_RIGHT.pkl'), 'rb') as f:
@@ -406,6 +467,7 @@ class Runner(object):
             image_files = [os.path.join(image_fp, e) for e in os.listdir(image_fp) if e.endswith('.jpg')]  # or jpg...
             bar = Bar(colored("DEMO", color='blue'), max=len(image_files))
             with torch.no_grad():
+                negativeness = []  # probability: (0 ~ 1)
                 for step, image_path in enumerate(image_files):
                     # EXP
                     # print('TPYE', type(self.face))
@@ -443,7 +505,7 @@ class Runner(object):
                     # np.save('EXP_demo/joint.npy', out['joint_img'][0].cpu().detach().numpy())
                     # return
                     # silhouette
-                    mask_pred = out.get('verts')
+                    mask_pred = out.get('mask_pred')  # edited here
                     if mask_pred is not None:
                         mask_pred = (mask_pred[0] > 0.3).cpu().numpy().astype(np.uint8)
                         mask_pred = cv2.resize(mask_pred, (input.size(3), input.size(2)))
@@ -476,6 +538,15 @@ class Runner(object):
                     save_mesh(os.path.join(output_fp, image_name + '_mesh.ply'), vertex, self.face)
                     # faces is incorrect
 
+                    if out.get('negative') is not None:
+                        negativeness += [
+                            torch.sigmoid(torch.mean(out['negative'][0, :]).cpu())  # [B, heads]
+                            ]  # apply sigmoid on model out, same to loss calculation
+
                     bar.suffix = '({batch}/{size})' .format(batch=step+1, size=len(image_files))
                     bar.next()
+
+                if negativeness != []:
+                    negativeness_path = os.path.join(output_fp, 'negative.csv')
+                    np.savetxt(negativeness_path, np.array(negativeness), delimiter=',')
             bar.finish()
