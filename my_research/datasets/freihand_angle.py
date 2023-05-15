@@ -73,7 +73,7 @@ class FreiHAND_Angle(data.Dataset):
         '''
         df = pd.read_csv(path)
         df['Number'] = df['Number'].astype('int')
-        df['Negative'] = (df['Negative'] == 'v').astype('float')
+        df['Negative'] = ((df['Negative'] == 'v') | (df['Negative'] == 'V')).astype('float')
         return df
 
 
