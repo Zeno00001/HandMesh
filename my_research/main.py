@@ -121,7 +121,7 @@ def main(args):
         else:
             model_path = osp.join(args.checkpoints_dir, cfg.MODEL.RESUME)
             checkpoint = torch.load(model_path, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
             print(f'Eval model in {model_path}, with dataset: {cfg.VAL.DATASET}')
     else:
         input('[ERROR] wrong cfg PHASE while loading model')

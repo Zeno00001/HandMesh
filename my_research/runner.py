@@ -74,7 +74,8 @@ class Runner(object):
                 # if self.epoch in [5, 10]:
                 #     self.writer.save_checkpoint(self.model, self.optimizer, None, self.epoch)
                 self.writer.save_checkpoint(self.model, self.optimizer, None, self.epoch, last=True)
-            self.pred()
+
+            self.pred() if self.cfg.TRAIN.DATASET != 'FreiHAND_Angle' else self.pred_negative()
         elif self.cfg.PHASE == 'eval':
             self.eval()
         elif self.cfg.PHASE == 'pred':
@@ -159,7 +160,11 @@ class Runner(object):
         self.model.train()
         if self.cfg.TRAIN.DATASET == 'FreiHAND_Angle':
             # freeze operation for BN.running_mean... in negative predictor
-            self.model._eval_bn_layers()
+            # and was finally useless
+            # if self.epoch < 65:
+            #     self.model._eval_bn_layers()
+            pass
+
         total_loss = 0
         forward_time = 0.
         backward_time = 0.
@@ -383,8 +388,8 @@ class Runner(object):
         from utils.read import save_mesh
         self.set_demo(self.args)
 
-        InferenceTestingImages = False
-        HeadCount = 2
+        InferenceTestingImages = False  # <- Hyper Parameter
+        HeadCount = 1  # 2nd
         heads_negativeness = [[] for _ in range(HeadCount+1)]
         counter = 0
         with torch.no_grad():
@@ -399,7 +404,7 @@ class Runner(object):
                     heads_negativeness[i] += [torch.sigmoid(out['negative'][0, i]).cpu().numpy()]
                 heads_negativeness[HeadCount] += [data['negative'][0].cpu().numpy()]
 
-                if torch.mean(torch.sigmoid(out['negative'][0, :])) > 0.5:
+                if torch.mean(torch.sigmoid(out['negative'][0, 0])) > 0.5:
                     if data['negative'][0] == 1:
                         counter += 1
 
@@ -445,7 +450,10 @@ class Runner(object):
         from utils.read import save_mesh
         self.set_demo(self.args)
 
-        INFER_LIST = ['01M', '01R', '01U', '03M', '03R', '03U', '05M', '05R', '05U', '07M', '07R', '07U', '09M', '09R', '09U', '21M', '21R', '21U', '23M', '23R', '23U', '25M', '25R', '25U', '27M', '27R', '27U', '29M', '29R', '29U', '41M', '41R', '41U', '43M', '43R', '43U', '45M', '45R', '45U', '47M', '47R', '47U', '49M', '49R', '49U']
+        # INFER_LIST = ['01M', '01R', '01U', '03M', '03R', '03U', '05M', '05R', '05U', '07M', '07R', '07U', '09M', '09R', '09U', '21M', '21R', '21U', '23M', '23R', '23U', '25M', '25R', '25U', '27M', '27R', '27U', '29M', '29R', '29U', '41M', '41R', '41U', '43M', '43R', '43U', '45M', '45R', '45U', '47M', '47R', '47U', '49M', '49R', '49U']
+        INFER_LIST = [e for e in os.listdir(os.path.join(self.args.work_dir, 'images'))]
+        INFER_LIST.remove('default.npy')
+        INFER_LIST.remove('.gitignore')
 
         for i in range(len(INFER_LIST)):
             INFER_FOLDER = INFER_LIST[i]
@@ -540,7 +548,8 @@ class Runner(object):
 
                     if out.get('negative') is not None:
                         negativeness += [
-                            torch.sigmoid(torch.mean(out['negative'][0, :]).cpu())  # [B, heads]
+                            # torch.sigmoid(torch.mean(out['negative'][0, :]).cpu())  # [B, heads]
+                            torch.sigmoid(out['negative'][0, 0]).cpu()
                             ]  # apply sigmoid on model out, same to loss calculation
 
                     bar.suffix = '({batch}/{size})' .format(batch=step+1, size=len(image_files))
