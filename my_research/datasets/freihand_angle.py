@@ -85,13 +85,14 @@ class FreiHAND_Angle(data.Dataset):
         negativeness = self.valid_seq['Negative'][idx % self.valid_seq_len]
         # print(f'type: {type(freihand_idx)}, val: {freihand_idx}')
 
+        # train test data 是同一份，test 少了 augmentation 的部份
         if 'train' in self.phase or 'test' in self.phase:
             if self.cfg.DATA.CONTRASTIVE and self.phase != 'test':
                 return self.get_contrastive_sample(freihand_idx, negativeness=negativeness)
             else:
                 return self.get_training_sample(freihand_idx, negativeness=negativeness)
-        elif 'eval' in self.phase or 'test' in self.phase:
-            return self.get_eval_sample(idx)
+        # elif 'eval' in self.phase or 'test' in self.phase:
+        #     return self.get_eval_sample(idx)
         else:
             raise Exception('phase error')
 

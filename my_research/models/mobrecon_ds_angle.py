@@ -55,21 +55,31 @@ class MobRecon_DS_Angle(nn.Module):
                                        up_transform, 
                                        cfg.MODEL.KPTS_NUM,
                                        meshconv=(SpiralConv, DSConv)[cfg.MODEL.SPIRAL.TYPE=='DSConv'])
-        self.freeze()
+        # self.freeze()
 
-    def freeze(self):
-        self.__freeze(self.backbone)
-        self.__freeze(self.decoder3d.de_layer_conv)
-        self.__freeze(self.decoder3d.upsample)
-        self.__freeze(self.decoder3d.de_layer)  # GCN
-        self.__freeze(self.decoder3d.head)      # GCN
+    def freeze(self, inversed=False):
+        self.__freeze(self.backbone, inversed)
+        self.__freeze(self.decoder3d.de_layer_conv, inversed)
+        self.__freeze(self.decoder3d.upsample, inversed)
+        self.__freeze(self.decoder3d.de_layer, inversed)  # GCN
+        self.__freeze(self.decoder3d.head, inversed)      # GCN
+        # 說明無效的 freeze
+        # From Scratch or From Pretrained
+        #     freeze 全部, freeze GCN 都沒用，準確度低
+        # From Scratch only
+        #     不 freeze: overfitting
+        # From Pretrained only
+        #     freeze 15 epoch 後，unfreeze 繼續訓練: 差不多，unfreeze 那一刻還是會 loss 飆高
+        #     不 freeze: 還行，但實際 inference 成果有些怪，部份斷斷續續 frame 偵測出 negative
 
-    def __freeze(self, mod: nn.parameter.Parameter):
+    def __freeze(self, mod: nn.parameter.Parameter, inversed=False):
+        ''' UNfreezed if inversed is True
+        '''
         if isinstance(mod, nn.Module):
             for k, v in mod.named_parameters():
-                v.requires_grad = False
+                v.requires_grad = inversed
         elif isinstance(mod, nn.parameter.Parameter):
-            mod.requires_grad = False
+            mod.requires_grad = inversed
 
     def _eval_bn_layers(self):
         for v in self.modules():
@@ -104,26 +114,23 @@ class MobRecon_DS_Angle(nn.Module):
         loss_dict = dict()
 
         loss_dict['verts_loss'] = l1_loss(kwargs['verts_pred'], kwargs['verts_gt'])
-        # loss_dict['joint_img_loss'] = l1_loss(kwargs['joint_img_pred'], kwargs['joint_img_gt'])
+        loss_dict['joint_img_loss'] = l1_loss(kwargs['joint_img_pred'], kwargs['joint_img_gt'])
         if self.cfg.DATA.CONTRASTIVE:
-            # loss_dict['normal_loss'] = 0.05 * (normal_loss(kwargs['verts_pred'][..., :3], kwargs['verts_gt'][..., :3], kwargs['face']) + \
-            #                                    normal_loss(kwargs['verts_pred'][..., 3:], kwargs['verts_gt'][..., 3:], kwargs['face']))
-            # loss_dict['edge_loss'] = 0.5 * (edge_length_loss(kwargs['verts_pred'][..., :3], kwargs['verts_gt'][..., :3], kwargs['face']) + \
-            #                                 edge_length_loss(kwargs['verts_pred'][..., 3:], kwargs['verts_gt'][..., 3:], kwargs['face']))
-            # if kwargs['aug_param'] is not None:
-            #     loss_dict['con3d_loss'] = contrastive_loss_3d(kwargs['verts_pred'], kwargs['aug_param'])
-            #     loss_dict['con2d_loss'] = contrastive_loss_2d(kwargs['joint_img_pred'], kwargs['bb2img_trans'], kwargs['size'])
+            loss_dict['normal_loss'] = 0.05 * (normal_loss(kwargs['verts_pred'][..., :3], kwargs['verts_gt'][..., :3], kwargs['face']) + \
+                                               normal_loss(kwargs['verts_pred'][..., 3:], kwargs['verts_gt'][..., 3:], kwargs['face']))
+            loss_dict['edge_loss'] = 0.5 * (edge_length_loss(kwargs['verts_pred'][..., :3], kwargs['verts_gt'][..., :3], kwargs['face']) + \
+                                            edge_length_loss(kwargs['verts_pred'][..., 3:], kwargs['verts_gt'][..., 3:], kwargs['face']))
+            if kwargs['aug_param'] is not None:
+                loss_dict['con3d_loss'] = contrastive_loss_3d(kwargs['verts_pred'], kwargs['aug_param'])
+                loss_dict['con2d_loss'] = contrastive_loss_2d(kwargs['joint_img_pred'], kwargs['bb2img_trans'], kwargs['size'])
+
             assert kwargs['negative_pred'] is not None
             total_counts = kwargs['negative_pred'].shape[1]  # (Batch, Head * Contrastive)
             loss_dict['negative_thumb_loss'] = 0
-            # head_weight = [0.25, 0.25, 0.25, 0.25]
-            head_weight = [0.5, 0.5]
-            # assert sum(head_weight) == 1.0
-            for h_idx in range(len(head_weight)):
-                for i in range(2):
-                    idx = h_idx*2 + i
-                    loss_dict['negative_thumb_loss'] += 0.5 * head_weight[h_idx] * \
-                                                        bce_wlog_loss(kwargs['negative_pred'][:, idx], kwargs['negative_gt'])
+            for i in range(2):
+                loss_dict['negative_thumb_loss'] += 0.5 * \
+                    bce_wlog_loss(kwargs['negative_pred'][:, i], kwargs['negative_gt'])
+            loss_dict['negative_thumb_loss'] = 0.4 * loss_dict['negative_thumb_loss']
         else:
             loss_dict['normal_loss'] = 0.1 * normal_loss(kwargs['verts_pred'], kwargs['verts_gt'], kwargs['face'].to(kwargs['verts_pred'].device))
             loss_dict['edge_loss'] = edge_length_loss(kwargs['verts_pred'], kwargs['verts_gt'], kwargs['face'].to(kwargs['verts_pred'].device))
@@ -179,6 +186,22 @@ class AngleNegativePredictionHead(nn.Module):
         return x
 
 
+class smallAngleNegativePredictionHead(nn.Module):
+    def __init__(self) -> None:
+        ''' 195 128 -> 1
+        '''
+        super().__init__()
+        self.linear1 = nn.Linear(128, 16)
+        self.dropout1 = nn.Dropout()
+        self.linear2 = nn.Linear(195 * 16, 1)
+
+    def forward(self, x):
+        x = self.dropout1(self.linear1(x))
+        x = rearrange(x, 'B V D -> B (V D)')
+        x = self.linear2(x)
+        return x
+
+
 # Advanced modules, adopt from `modules.py`
 class Reg2DDecode3D(nn.Module):
     def __init__(self, latent_size, out_channels, spiral_indices, up_transform, uv_channel, meshconv=SpiralConv):
@@ -212,10 +235,7 @@ class Reg2DDecode3D(nn.Module):
         # verts feature: [49, channels] = upsample @ [21, channels]
 
         # verts: [49, 98, 195, 389, 778]
-        self.negative_head1 = AngleNegativePredictionHead(verts=98, dim=256)
-        self.negative_head2 = AngleNegativePredictionHead(verts=195, dim=128)
-        # self.negative_head3 = AngleNegativePredictionHead(verts=389, dim=64)
-        # self.negative_head4 = AngleNegativePredictionHead(verts=778, dim=32)
+        self.negative_head2 = smallAngleNegativePredictionHead()
 
 
     def index(self, feat, uv):
@@ -234,16 +254,8 @@ class Reg2DDecode3D(nn.Module):
         negativeness_list = []
         for i, layer in enumerate(self.de_layer):
             x = layer(x, self.up_transform[num_features - i - 1])
-            # print(x.shape)
-            # after 1st GCN layer
-            if i == 0:
-                negativeness_list += [self.negative_head1(x)]
-            elif i == 1:
+            if i == 1:
                 negativeness_list += [self.negative_head2(x)]
-            # elif i == 2:
-            #     negativeness_list += [self.negative_head3(x)]
-            # elif i == 3:
-            #     negativeness_list += [self.negative_head4(x)]
             # B, [49, 98, 195, 389, 778], [256, 256, 128, 64, 32]
         pred = self.head(x)
 

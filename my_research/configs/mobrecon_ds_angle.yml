@@ -1,10 +1,10 @@
 VERSION: 0.1
-PHASE: 'pred'
+PHASE: 'demo'  # ['train', 'demo']
 MODEL:
   NAME: MobRecon_DS_Angle
   SPIRAL:
     TYPE: 'DSConv'
-  RESUME: checkpoint_last.pt
+  RESUME: checkpoint_best.pt  # checkpoint_last.pt for training
 DATA:
   CONTRASTIVE: True
   FREIHAND_ANGLE:
@@ -18,8 +18,8 @@ DATA:
     ROOT: 'data/CompHand'
 TRAIN:
   DATASET: 'FreiHAND_Angle'
-  EPOCHS: 90  # 38
-  DECAY_STEP: [75, ]  # [30, ]
+  EPOCHS: 100  # 38
+  DECAY_STEP: [38, ]  # [30, ]
   BATCH_SIZE: 32
   LR: 0.001
   GPU_ID: 0,
