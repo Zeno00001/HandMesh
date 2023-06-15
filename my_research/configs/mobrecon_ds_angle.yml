@@ -18,7 +18,7 @@ DATA:
     ROOT: 'data/CompHand'
 TRAIN:
   DATASET: 'FreiHAND_Angle'
-  EPOCHS: 100  # 38
+  EPOCHS: 90  # 38
   DECAY_STEP: [38, ]  # [30, ]
   BATCH_SIZE: 32
   LR: 0.001
