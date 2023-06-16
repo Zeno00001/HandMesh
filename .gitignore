@@ -8,3 +8,7 @@ __pycache__/
 .idea/
 **/*.pkl
 **/out/*
+!my_research/out/HanCo_Eval
+my_research/out/HanCo_Eval/*
+!my_research/out/HanCo_Eval/contour_joint.jpg
+!my_research/out/HanCo_Eval/joint_confidence.npy
