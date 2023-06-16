@@ -714,7 +714,7 @@ class MyTransformer(nn.Transformer):
                 image_feature, image_positional_embedding,
                 DiagonalMask, JointConfMask,
                 ReturnEachEncoderLayerOutput = (ReturnEncoderOutput=='each'),
-                temporal_mode=True,
+                # temporal_mode=True,  # ? normal encoder temporally, for encoder only ablation
                 )
         elif self.Mode == 'decoder only':
             out = self.forward_decoder(src, # .clone(),

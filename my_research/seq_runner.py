@@ -443,9 +443,12 @@ class Runner(object):
                 image_width = data['img'].size(3) # in (B, F, 3, H, W)
                 frame_len = data['img'].size(1)
                 seq_id = data['seq_id'].item()
+                # if seq_id != 26:  # for joint_conf purpose
+                #     continue
 
                 t = time.time()
                 data = self.phrase_data(data)
+                # out = self.seq_pred_one_clip(self.model, data['img'])  # for joint_conf purpose
 
                 # save in scale of meter
                 prediction_path = os.path.join(self.args.out_dir, self.cfg.TEST.SAVE_DIR, f'{seq_id:04d}_0.npz') # cam: 0
@@ -616,6 +619,7 @@ class Runner(object):
             'joint_img': [None] * clip_len,
         }
         win_start = 0
+        # win_start = 32  # for joint_conf purpose
         while win_start + win_len < clip_len:
             win_data = data[:, win_start : win_start + 8]  # first ':' to reserve Batch dimension
             win_out = model(win_data)

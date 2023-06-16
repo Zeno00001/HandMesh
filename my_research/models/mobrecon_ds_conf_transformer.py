@@ -317,6 +317,9 @@ class SequencialReg2DDecode3D(nn.Module):
         x = self.de_layer_conv(x)  # change channel to self.latent_size
         # (BF, 256, 4, 4) -> (BF, 256 -3, 4, 4)
 
+        # for joint_conf purpose
+        # import numpy as np
+        # np.save(os.path.join(os.getcwd(), 'my_research', 'out', 'HanCo_Eval', 'joint_confidence.npy'), conf.detach().cpu().numpy())
         image_feature = image_uv_embed = None
         # image_feature = rearrange(CrossedFeatureSource_, '(B F) C H W -> B F C H W', F=frame_len)  # (B, F, 256, 4, 4)
         # B, F = image_feature.shape[:2]

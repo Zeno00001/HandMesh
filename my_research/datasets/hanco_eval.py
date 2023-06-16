@@ -966,7 +966,7 @@ class HanCo_Eval(data.Dataset):
 
         # dataset = HanCo_Eval(cfg, phase='test', frame_counts=8)
         # self = dataset
-        idx = self._compute_index(0, seq_pick, 0)
+        idx = self._compute_index(0, seq_pick, 0)  # augment: 0, seq: seq_pick, camera: 0
 
         data = self[idx]
         # k = data['calib'][0][:3, :3] # 4x4 calib into 3x3 K
