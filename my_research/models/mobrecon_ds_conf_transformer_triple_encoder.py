@@ -309,7 +309,7 @@ class SequencialReg2DDecode3D(nn.Module):
             attn += attn_mask
         attn[attn < 0] = 0
 
-        sum_ = torch.sum(attn, dim=2, keepdim=True)
+        sum_ = torch.sum(attn, dim=2, keepdim=True) + 0.00000000001
         attn /= sum_ # <- replace softmax to this
 
     if dropout_p > 0.0:
