@@ -3,6 +3,7 @@ brotlipy==0.7.0
 certifi==2022.5.18.1
 chumpy==0.70
 cycler==0.11.0
+einops==0.6.0
 fonttools==4.33.3
 fvcore==0.1.5.post20220512
 h5py==3.6.0
