@@ -4,7 +4,7 @@
 import functools
 import inspect
 import logging
-from fvcore.common.config import CfgNode as _CfgNode
+
 
 from ..tools.file_io import PathManager
 
